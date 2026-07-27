@@ -1,0 +1,34 @@
+name: axelpay
+description: AxelPay — gestion des factures et recharges Eneo.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  provider: ^6.1.2
+  dio: ^5.4.0
+  flutter_secure_storage: ^9.0.0
+  fl_chart: ^0.68.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
+
+  # ============================================================
+  # DÉCLARATION DES IMAGES (voir README_ASSETS.md)
+  # ============================================================
+  # Toute image placée dans un dossier listé ici devient utilisable
+  # dans le code via Image.asset('assets/images/nom_du_fichier.ext').
+  # Si vous avez DÉJÀ un pubspec.yaml dans votre projet, ne copiez
+  # pas ce fichier tel quel : ajoutez seulement la section "assets:"
+  # ci-dessous dans votre pubspec.yaml existant, sous la clé "flutter:".
+  assets:
+    - assets/images/

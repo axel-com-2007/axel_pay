@@ -1,0 +1,10 @@
+# Dépendances de l'app `api`.
+# Ce fichier ne couvre que ce qui est nécessaire aux correctifs de cette
+# passe d'optimisation ; il ne remplace pas le requirements.txt global du
+# projet (Django, djangorestframework, psycopg2, etc. déjà en place).
+
+# Hachage Argon2id des mots de passe (CDC 11.1). Sans ce paquet,
+# hash_password()/verify_password() dans views.py se rabattent
+# automatiquement sur le hasher par défaut de Django (PBKDF2, toujours sûr)
+# — mais la CDC demande explicitement Argon2id, donc à installer.
+argon2-cffi>=23.1.0

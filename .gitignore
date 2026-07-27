@@ -1,0 +1,89 @@
+#############################
+# FLUTTER
+#############################
+
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub/
+build/
+ios/Flutter/Flutter.framework
+ios/Flutter/App.framework
+
+# Android
+android/.gradle/
+android/app/debug/
+android/app/profile/
+android/app/release/
+
+# VSCode
+.vscode/
+
+# IntelliJ
+.idea/
+
+#############################
+# DJANGO
+#############################
+
+*.log
+*.pot
+*.pyc
+__pycache__/
+
+db.sqlite3
+
+media/
+
+staticfiles/
+
+#############################
+# Python
+#############################
+
+venv/
+env/
+ENV/
+.venv/
+
+pip-wheel-metadata/
+
+#############################
+# Secrets
+#############################
+
+.env
+.env.*
+*.pem
+*.key
+
+#############################
+# OS
+#############################
+
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+#############################
+# Cache
+#############################
+
+.cache/
+.pytest_cache/
+.mypy_cache/
+
+#############################
+# Coverage
+#############################
+
+.coverage
+htmlcov/
+
+#############################
+# Misc
+#############################
+
+*.tmp
+*.swp

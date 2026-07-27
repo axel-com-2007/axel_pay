@@ -1,0 +1,108 @@
+INTÉGRATION LOTTIE — TERMINÉE
+========================================================================
+Ce zip contient le frontend Flutter complet (dossier lib/) avec
+l'intégration Lottie ACHEVÉE. Tout ce qui restait listé dans
+ETAT_INTEGRATION_LOTTIE.txt (zip précédent) est fait.
+
+
+0. CE QUI A ÉTÉ AJOUTÉ DANS CETTE PASSE
+------------------------------------------------------------------------
+a) lib/screens/settings/settings_screen.dart
+   - import 'package:lottie/lottie.dart' ajouté.
+   - _exporterDonnees() (flux d'export RGPD) :
+       * L'attente réseau affiche désormais une boîte de dialogue
+         non-annulable avec LottieLoader (loading_turq.json, en boucle)
+         et le libellé "Préparation de votre export…", à la place du
+         simple SnackBar texte.
+       * La boîte de dialogue de succès affiche l'illustration
+         database.json (lecture unique, 96x96) au-dessus du message de
+         confirmation.
+       * En cas d'erreur (ApiException), la boîte d'attente est
+         proprement fermée avant d'afficher le SnackBar d'erreur.
+   - Accordéon FAQ :
+       * click.json est câblé sur LottieOneShot (déjà prêt dans
+         animations.dart), placé juste avant l'icône +/- de chaque
+         item. Il se joue une seule fois à l'ouverture d'un volet
+         (trigger = état "ouverte" de l'item, passe de false à true).
+
+b) lib/screens/payment/payment_screen.dart
+   - _buildAttente() (écran d'attente de confirmation de paiement,
+     jusqu'à 60s) : le CircularProgressIndicator nu est remplacé par
+     LottieLoader(size: 80) (loading_turq.json, déjà utilisé ailleurs
+     dans l'app pour la cohérence de marque).
+
+c) lib/screens/auth/register_screen.dart
+   - Vérifié : aucun spinner brut, aucune illustration Lottie prévue
+     pour cet écran dans le mapping (voir section 3 ci-dessous). Le
+     ShakeWidget existant (secousse sur erreur) est inchangé. Rien à
+     modifier.
+
+d) lib/screens/contracts/contracts_screen.dart
+   - Vérifié : l'import 'package:lottie/lottie.dart' était déjà présent
+     (corrigé dans le zip précédent). Pas de changement nécessaire.
+
+e) pubspec.yaml (absent du projet fourni — créé)
+   - Ajout de la dépendance :
+       dependencies:
+         lottie: ^3.1.0
+   - Déclaration des assets :
+       flutter:
+         assets:
+           - assets/animations/
+   - Toutes les dépendances déjà utilisées par le code existant
+     (fl_chart, intl, dio, flutter_secure_storage, provider,
+     cupertino_icons) et flutter_lints (dev) ont été reprises telles
+     que documentées dans les commentaires du code, avec leurs
+     contraintes de version d'origine.
+   - Reste à faire de votre côté : lancer `flutter pub get`.
+
+f) Vérification finale de syntaxe
+   - Chaque fichier .dart touché (dans ce zip et le précédent) a été
+     repassé au crible d'un script de vérification d'équilibre
+     parenthèses / crochets / accolades (en ignorant chaînes et
+     commentaires) : tous OK.
+   - Cross-vérification import ↔ usage sur tous les fichiers
+     mentionnant Lottie : chaque usage de Lottie.asset/LottieDelegates
+     a son import 'package:lottie/lottie.dart', et chaque usage de
+     LottieAssets/LottieLoader/EmptyStateLottie/LottieOneShot a son
+     import '../../widgets/animations/animations.dart'. Aucun écart
+     trouvé.
+   - Rappel : aucun outil Dart (flutter analyze / pub get) n'est
+     disponible dans cet environnement — cette vérification reste à
+     faire de votre côté avant de committer, en particulier pour les
+     erreurs de typage.
+
+
+1. RAPPEL — CE QUI ÉTAIT DÉJÀ FAIT (zip précédent, inchangé ici)
+------------------------------------------------------------------------
+Voir ANIMATIONS_APPLIQUEES.md pour les animations "SDK pur" (Shimmer,
+FadeSlideIn, SwipeToConfirm, ConfettiBurst, ShakeWidget, etc.) et le
+détail complet des écrans Lottie déjà branchés (splash, login, OTP,
+dashboard, compteurs, prépayé, postpayé, contrats, factures de
+contrat).
+
+
+2. RAPPEL — mapping fichier JSON -> usage (état final)
+------------------------------------------------------------------------
+click.json         -> FAQ (accordéon), settings_screen.dart — FAIT
+database.json      -> export RGPD, settings_screen.dart — FAIT
+girl_say_hi.json   -> états vides "aucun compteur/contrat" — FAIT
+loading_turq.json  -> loader de marque (splash, graphique, détail
+                      contrat, attente paiement) — FAIT (4 endroits)
+login.json         -> en-tête écran de connexion — FAIT
+maintenance.json   -> message "fonctionnalité indisponible" — FAIT
+password.json      -> écran OTP — FAIT
+search.json        -> états vides "aucune donnée" — FAIT
+
+Les 8 animations fournies sont maintenant toutes branchées quelque
+part dans l'application.
+
+
+3. À FAIRE DE VOTRE CÔTÉ AVANT DE COMMITTER
+------------------------------------------------------------------------
+- flutter pub get
+- flutter analyze (aucun outil Dart disponible ici pour le faire à
+  votre place)
+- Un test manuel rapide de l'écran Paramètres (export RGPD + FAQ) et
+  de l'écran de paiement (attente de confirmation) est recommandé,
+  ces deux zones étant les seules modifiées dans cette passe.

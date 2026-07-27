@@ -1,0 +1,39 @@
+name: axelpay
+description: "AxelPay — application mobile cliente Eneo (frontend uniquement, données de test)."
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.6
+  # Graphique d'évolution de consommation (écran Postpayé)
+  fl_chart: ^0.68.0
+  # Formatage des montants FCFA et des dates
+  intl: ^0.19.0
+  dio: ^5.10.0
+  flutter_secure_storage: ^9.0.0 # stockage sécurisé des tokens JWT
+  provider: ^6.1.0
+  # Illustrations animées (splash, états vides, micro-interactions FAQ,
+  # export RGPD, attente de paiement...) — voir lib/widgets/animations/animations.dart
+  lottie: ^3.1.0
+  sqflite_sqlcipher: ^3.1.0
+  connectivity_plus: ^6.0.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    # Animations Lottie fournies dans assets/animations/ (8 fichiers
+    # .json, voir lib/widgets/animations/animations.dart::LottieAssets).
+    - assets/animations/
+    # Décommentez et ajoutez vos propres visuels dans assets/images si besoin
+    # - assets/images/
