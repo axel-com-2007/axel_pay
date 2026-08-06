@@ -44,6 +44,7 @@ réel doit être branché sur les services dédiés.
 
 import hashlib
 import hmac
+import logging
 import secrets
 import string
 from datetime import timedelta
@@ -66,6 +67,9 @@ from rest_framework.views import APIView
 
 from .crypto import encrypt_token
 from .pagination import StandardResultsSetPagination
+from .services import notchpay
+from .services.notchpay import NotchPayError
+from .services.orange_sms import OrangeSmsError, envoyer_sms
 from .models import (
     Adresses,
     AuditLogs,
@@ -101,6 +105,8 @@ from .serializers import (
     WebhookLogsSerializer,
     masquer_prenom,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # ==============================================================================
@@ -419,10 +425,18 @@ class RegisterView(APIView):
         # VerifyOTPView — voir generate_and_cache_otp().
         otp = generate_and_cache_otp(user.telephone)
         print(f"[DEBUG OTP] telephone={user.telephone} otp={otp}")
-        # TODO INTEGRATION : envoyer l'OTP par SMS via la passerelle dédiée
-        # (file d'attente asynchrone) — la génération/le stockage sont déjà
-        # fonctionnels, seul l'envoi réseau reste à brancher.
-        # send_sms_task.delay(user.telephone, f"Votre code Eneo : {otp}")
+        # Envoi réel de l'OTP par SMS via l'API Orange SMS (CDC 5.1/10).
+        # ⚠️ Volontairement non bloquant : le compte est déjà créé et l'OTP
+        # déjà généré/mis en cache avant cet appel — un incident réseau ou
+        # une mauvaise configuration Orange (secret manquant, etc.) ne doit
+        # jamais empêcher l'inscription. Le `print` de debug ci-dessus reste
+        # le filet de secours en environnement de développement.
+        # TODO INTEGRATION : basculer cet appel synchrone vers une file
+        # d'attente asynchrone (Celery/RQ, CDC 7.3) dès qu'elle sera câblée.
+        try:
+            envoyer_sms(user.telephone, f"Votre code de vérification Eneo : {otp}")
+        except OrangeSmsError as exc:
+            logger.warning("Échec de l'envoi SMS OTP à %s : %s", user.telephone, exc)
 
         return Response(
             UsersSerializer(user).data,
@@ -1338,12 +1352,10 @@ class FactureStatutView(APIView):
 # MODULE 4 — CLIENT PRÉPAYÉ (CDC 5.3)
 # ==============================================================================
 
-class SoldeCreditView(APIView):
+def _consommation_estimee_kwh(transactions, total_kwh_achete):
     """
-    Solde de crédit prépayé, affiché simultanément en kWh et en FCFA,
-    actualisé à l'ouverture de l'application (CDC 5.3).
-    Calculé comme la somme des recharges confirmées moins la consommation
-    depuis la première recharge.
+    Retourne (consommation_journaliere_simulee, consommation_estimee).
+    `transactions` doit être trié par date_transaction croissante.
 
     CORRECTIF (audit du 24/07/2026) : aucune table de relevés de
     consommation réelle n'existe encore pour les compteurs prépayés (la
@@ -1354,83 +1366,106 @@ class SoldeCreditView(APIView):
     consommation réelle, donc que sa consommation journalière moyenne
     correspond au total acheté divisé par le nombre de jours écoulés
     depuis sa première recharge. Dès qu'un historique de consommation
-    réelle existera en base, `_consommation_estimee_kwh` devra être
-    remplacé par une lecture de cette table — le reste de la vue
-    (soustraction, jours d'autonomie, FCFA) n'aura pas à changer.
+    réelle existera en base, cette fonction devra être remplacée par une
+    lecture de cette table — le reste (soustraction, jours d'autonomie,
+    FCFA, seuil d'alerte) n'aura pas à changer, cf. `_calculer_solde_prepaye`
+    ci-dessous, partagée par `SoldeCreditView` et `AlerteSoldeBasView`.
+    """
+    premiere_transaction = transactions.first()
+    if not premiere_transaction or not total_kwh_achete:
+        return 0.0, 0.0
+
+    jours_ecoules = max(
+        (timezone.now() - premiere_transaction.date_transaction).days, 1
+    )
+    consommation_journaliere_simulee = float(total_kwh_achete) / jours_ecoules
+    consommation_estimee = consommation_journaliere_simulee * jours_ecoules
+    # Le modèle simulé suppose un usage régulier calé sur les recharges :
+    # on plafonne au total acheté pour ne jamais faire ressortir un solde
+    # négatif du simple fait d'un arrondi.
+    consommation_estimee = min(consommation_estimee, float(total_kwh_achete))
+    return consommation_journaliere_simulee, consommation_estimee
+
+
+def _calculer_solde_prepaye(id_compteur):
+    """
+    Calcule le solde de crédit prépayé d'un compteur (kWh + FCFA), l'autonomie
+    estimée en jours et le prix du kWh utilisé pour la conversion.
+
+    Factorisé depuis `SoldeCreditView` (correctif du 24/07/2026) pour être
+    également consommé par `AlerteSoldeBasView`, qui avant ce correctif
+    renvoyait toujours `solde_bas: None` / `jours_autonomie_estimes: None`
+    sans le moindre calcul — alors même que la logique existait déjà ici.
+
+    Renvoie un dict directement réutilisable comme corps de réponse (ou
+    fragment de corps de réponse) par les deux vues.
+    """
+    compteur = get_object_or_404(Compteurs, pk=id_compteur)
+
+    transactions = TransactionsPrepayees.objects.filter(
+        id_compteur_id=id_compteur, statut_paiement="Réussie",
+    ).order_by("date_transaction")
+    total_kwh_achete = transactions.aggregate(total=Sum("valeur_kwh"))["total"] or 0
+
+    consommation_journaliere_simulee, consommation_estimee = _consommation_estimee_kwh(
+        transactions, total_kwh_achete
+    )
+    solde_kwh = round(float(total_kwh_achete) - consommation_estimee, 2)
+
+    # "Jours d'autonomie estimés" : au rythme de consommation simulé
+    # ci-dessus, combien de jours le solde restant doit-il durer ? Sans
+    # aucune recharge (compteur neuf), il n'y a aucune base pour
+    # l'estimer -> None plutôt qu'une valeur inventée.
+    if consommation_journaliere_simulee > 0:
+        jours_autonomie_estimes = round(solde_kwh / consommation_journaliere_simulee, 1)
+    else:
+        jours_autonomie_estimes = None
+
+    # Conversion en FCFA : on utilise le tarif en vigueur pour le type de
+    # ce compteur (même source que AchatCreditView) ; à défaut, on
+    # retombe sur le prix appliqué à la dernière recharge connue plutôt
+    # que de renvoyer un FCFA vide alors qu'on a un solde en kWh.
+    tarif_courant = Tarifs.objects.filter(
+        type_compteur=compteur.type_compteur, date_fin__isnull=True,
+    ).order_by("-date_debut").first()
+    derniere_transaction = transactions.last()
+    prix_kwh = (
+        tarif_courant.prix_kwh if tarif_courant
+        else (derniere_transaction.prix_kwh_applique if derniere_transaction else None)
+    )
+    solde_fcfa = round(solde_kwh * float(prix_kwh), 2) if prix_kwh is not None else None
+
+    return {
+        "solde_kwh_achete_total": total_kwh_achete,
+        "solde_kwh": solde_kwh,
+        "solde_fcfa": solde_fcfa,
+        "jours_autonomie_estimes": jours_autonomie_estimes,
+        "prix_kwh": float(prix_kwh) if prix_kwh is not None else None,
+    }
+
+
+class SoldeCreditView(APIView):
+    """
+    Solde de crédit prépayé, affiché simultanément en kWh et en FCFA,
+    actualisé à l'ouverture de l'application (CDC 5.3).
+    Calculé comme la somme des recharges confirmées moins la consommation
+    depuis la première recharge — cf. `_calculer_solde_prepaye` pour le
+    détail du calcul (modèle de consommation simulé, donnée de test).
     """
     permission_classes = [permissions.IsAuthenticated]
-
-    @staticmethod
-    def _consommation_estimee_kwh(transactions, total_kwh_achete):
-        """
-        Retourne (consommation_journaliere_simulee, consommation_estimee).
-        `transactions` doit être trié par date_transaction croissante.
-        Donnée de test tant qu'aucun relevé de consommation réel n'existe
-        (cf. docstring de la vue).
-        """
-        premiere_transaction = transactions.first()
-        if not premiere_transaction or not total_kwh_achete:
-            return 0.0, 0.0
-
-        jours_ecoules = max(
-            (timezone.now() - premiere_transaction.date_transaction).days, 1
-        )
-        consommation_journaliere_simulee = float(total_kwh_achete) / jours_ecoules
-        consommation_estimee = consommation_journaliere_simulee * jours_ecoules
-        # Le modèle simulé suppose un usage régulier calé sur les recharges :
-        # on plafonne au total acheté pour ne jamais faire ressortir un solde
-        # négatif du simple fait d'un arrondi.
-        consommation_estimee = min(consommation_estimee, float(total_kwh_achete))
-        return consommation_journaliere_simulee, consommation_estimee
 
     def get(self, request, id_compteur):
         if not user_has_access_to_compteur(request.user, id_compteur):
             raise PermissionDenied("Accès non autorisé à ce compteur.")
 
-        compteur = get_object_or_404(Compteurs, pk=id_compteur)
-
-        # Avant ce correctif, `.aggregate(total=None)` ne calculait
-        # littéralement rien (paramètre invalide, pas d'agrégation Sum) et le
-        # résultat n'était même pas utilisé dans la réponse.
-        transactions = TransactionsPrepayees.objects.filter(
-            id_compteur_id=id_compteur, statut_paiement="Réussie",
-        ).order_by("date_transaction")
-        total_kwh_achete = transactions.aggregate(total=Sum("valeur_kwh"))["total"] or 0
-
-        consommation_journaliere_simulee, consommation_estimee = self._consommation_estimee_kwh(
-            transactions, total_kwh_achete
-        )
-        solde_kwh = round(float(total_kwh_achete) - consommation_estimee, 2)
-
-        # "Jours d'autonomie estimés" : au rythme de consommation simulé
-        # ci-dessus, combien de jours le solde restant doit-il durer ? Sans
-        # aucune recharge (compteur neuf), il n'y a aucune base pour
-        # l'estimer -> None plutôt qu'une valeur inventée.
-        if consommation_journaliere_simulee > 0:
-            jours_autonomie_estimes = round(solde_kwh / consommation_journaliere_simulee, 1)
-        else:
-            jours_autonomie_estimes = None
-
-        # Conversion en FCFA : on utilise le tarif en vigueur pour le type de
-        # ce compteur (même source que AchatCreditView) ; à défaut, on
-        # retombe sur le prix appliqué à la dernière recharge connue plutôt
-        # que de renvoyer un FCFA vide alors qu'on a un solde en kWh.
-        tarif_courant = Tarifs.objects.filter(
-            type_compteur=compteur.type_compteur, date_fin__isnull=True,
-        ).order_by("-date_debut").first()
-        derniere_transaction = transactions.last()
-        prix_kwh = (
-            tarif_courant.prix_kwh if tarif_courant
-            else (derniere_transaction.prix_kwh_applique if derniere_transaction else None)
-        )
-        solde_fcfa = round(solde_kwh * float(prix_kwh), 2) if prix_kwh is not None else None
+        solde = _calculer_solde_prepaye(id_compteur)
 
         return Response({
             "id_compteur": id_compteur,
-            "solde_kwh_achete_total": total_kwh_achete,
-            "solde_kwh": solde_kwh,
-            "solde_fcfa": solde_fcfa,
-            "jours_autonomie_estimes": jours_autonomie_estimes,
+            "solde_kwh_achete_total": solde["solde_kwh_achete_total"],
+            "solde_kwh": solde["solde_kwh"],
+            "solde_fcfa": solde["solde_fcfa"],
+            "jours_autonomie_estimes": solde["jours_autonomie_estimes"],
             # Signale explicitement au client que la consommation utilisée
             # est simulée (donnée de test) tant que la synchro IoT/API Eneo
             # n'est pas branchée — évite d'afficher un chiffre simulé comme
@@ -1485,7 +1520,14 @@ class AchatCreditView(APIView):
 
         valeur_kwh = round(montant / float(tarif_courant.prix_kwh), 3)
 
+        # CORRECTIF : id_transaction est la clé primaire (CharField, non
+        # auto-incrémentée) et n'était jamais fournie ici, ce qui insérait
+        # une chaîne vide '' à chaque achat -> IntegrityError (clé dupliquée)
+        # dès le 2e achat. Génération explicite, même pattern que id_paiement
+        # / id_litige ailleurs dans ce fichier ("TRP-" + 16 car. hex = 20
+        # car., dans la limite max_length=25 de la colonne).
         transaction_obj = TransactionsPrepayees.objects.create(
+            id_transaction=f"TRP-{secrets.token_hex(8).upper()}",
             montant_fcfa=montant,
             prix_kwh_applique=tarif_courant.prix_kwh,  # figé (RG-07)
             valeur_kwh=valeur_kwh,
@@ -1522,6 +1564,15 @@ class AlerteSoldeBasView(APIView):
     Alerte proactive de solde bas selon un seuil paramétrable, avec
     estimation du nombre de jours d'autonomie restants basée sur
     l'historique de consommation de l'utilisateur (CDC 5.3).
+
+    CORRECTIF (finalisation module prépayé) : cette vue renvoyait
+    systématiquement `solde_bas: None` / `jours_autonomie_estimes: None`,
+    alors que `_calculer_solde_prepaye` (partagée avec `SoldeCreditView`,
+    cf. correctif du 24/07/2026) permet de les déduire directement — il ne
+    manquait que la comparaison au seuil. Le solde utilisé reste le MODÈLE
+    DE CONSOMMATION SIMULÉ documenté sur `_consommation_estimee_kwh` tant
+    que la synchronisation IoT/API Eneo (donnée de consommation réelle)
+    n'est pas branchée — cf. §2.6 du CDC.
     """
     permission_classes = [permissions.IsAuthenticated]
 
@@ -1530,13 +1581,18 @@ class AlerteSoldeBasView(APIView):
             raise PermissionDenied("Accès non autorisé à ce compteur.")
 
         seuil_kwh = float(request.query_params.get("seuil_kwh", 5))
-        # TODO INTEGRATION : calculer le solde réel et la consommation
-        # moyenne journalière à partir de l'historique (IoT/API Eneo).
+        solde = _calculer_solde_prepaye(id_compteur)
+        solde_kwh = solde["solde_kwh"]
+
         return Response({
             "id_compteur": id_compteur,
             "seuil_kwh": seuil_kwh,
-            "solde_bas": None,           # TODO : bool réel
-            "jours_autonomie_estimes": None,  # TODO : calcul réel
+            "solde_kwh": solde_kwh,
+            "solde_bas": solde_kwh <= seuil_kwh,
+            "jours_autonomie_estimes": solde["jours_autonomie_estimes"],
+            # cf. `SoldeCreditView` : même mise en garde sur la nature
+            # simulée de la consommation utilisée pour ce calcul.
+            "consommation_estimee_simulee": True,
         })
 
     def post(self, request, id_compteur):
@@ -1610,6 +1666,66 @@ class AlerteTechniqueCompteurView(APIView):
 # MODULE 5 — PAIEMENTS & AGRÉGATEURS MOBILE MONEY (CDC 9 — RG-06 à RG-11)
 # ==============================================================================
 
+def finaliser_recharge_paiement(paiement):
+    """
+    Génère le jeton STS à 20 chiffres après confirmation (CDC 5.3/9).
+    RG-11 : en cas d'échec de génération, la transaction n'est jamais
+    clôturée sur un statut ambigu — elle reste "EN_ATTENTE_JETON" et
+    fait l'objet d'un suivi explicite jusqu'à délivrance tardive ou
+    remboursement automatique.
+
+    Fonction module-level (extraite de `WebhookPaiementView`) afin d'être
+    partagée par tous les webhooks d'agrégateur (générique + NotchPay) sans
+    dupliquer la logique métier.
+    """
+    tx = get_object_or_404(TransactionsPrepayees, pk=paiement.reference_cible)
+    try:
+        # TODO INTEGRATION : appel réel à l'API Eneo/IoT pour générer le
+        # jeton STS. Cet appel, potentiellement lent, doit être isolé
+        # dans un traitement asynchrone (file d'attente + worker), pas
+        # exécuté en synchrone dans une transaction DB (CDC 8.2).
+        token = "".join(secrets.choice(string.digits) for _ in range(20))
+        # Chiffrement AES-256-GCM réel avant stockage (api/crypto.py) :
+        # `tx.token_genere` ne contient jamais le jeton en clair, mais
+        # (nonce || ciphertext || tag) encodé en base64. Le
+        # déchiffrement pour réaffichage au client se fait à la volée
+        # dans TransactionsPrepayeesSerializer (TokenHistoriqueView,
+        # AchatCreditView, ExportDataView...), jamais ici en écriture.
+        tx.token_genere = encrypt_token(token)
+        tx.statut_paiement = "Réussie"
+        tx.save(update_fields=["token_genere", "statut_paiement"])
+        # Notification transactionnelle (cascade Push → WhatsApp → SMS,
+        # CDC 10) + SMS de secours explicite (CDC 5.3). Volontairement non
+        # bloquant : le paiement/jeton sont déjà persistés au-dessus.
+        try:
+            envoyer_sms(
+                paiement.id_user.telephone,
+                f"Eneo : votre jeton de recharge est {token}. Conservez-le, il reste consultable dans l'historique.",
+            )
+        except OrangeSmsError as exc:
+            logger.warning("Échec du SMS de secours pour le jeton (paiement=%s) : %s", paiement.id_paiement, exc)
+    except Exception:
+        # ⚠️ `enum_statut_transaction` (axel.sql) ne contient QUE
+        # 'Initiée', 'Réussie', 'Échouée', 'Annulée', 'Remboursée' — pas
+        # de statut "en attente de jeton" distinct. Le paiement lui-même
+        # est déjà confirmé (Paiements.statut='Confirmé' plus haut) ; on
+        # laisse donc la transaction à 'Réussie' et on s'appuie sur
+        # `token_genere IS NULL` comme signal "jeton pas encore délivré"
+        # pour le suivi RG-11. Si vous voulez un vrai statut dédié,
+        # ajoutez une valeur à l'ENUM côté SQL (ex: 'En_Attente_Jeton').
+        tx.statut_paiement = "Réussie"
+        tx.save(update_fields=["statut_paiement"])
+        # TODO INTEGRATION : programmer une nouvelle tentative (retry
+        # exponentiel) et notifier le support si l'échec persiste (RG-11).
+
+
+def finaliser_facture_paiement(paiement):
+    """Marque la facture postpayée correspondante comme payée."""
+    facture = get_object_or_404(FacturesPostpayees, pk=paiement.reference_cible)
+    facture.statut = "Payée"
+    facture.save(update_fields=["statut"])
+
+
 class InitierPaiementView(APIView):
     """
     Initie un paiement (règlement de facture postpayée OU achat de crédit
@@ -1679,7 +1795,7 @@ class InitierPaiementView(APIView):
             id_paiement=f"PAY-{secrets.token_hex(8).upper()}",
              type_paiement=self.TYPE_PAIEMENT_MAP[type_paiement],
             reference_cible=reference_cible,
-             agregateur="Campay",   # déterminé lors de la sélection d'agrégateur (failover 7.4)
+             agregateur="NotchPay",
             operateur_mobile_money=operateur,
             numero_mobile_money=numero_mobile_money,
             montant_fcfa=montant,
@@ -1690,16 +1806,51 @@ class InitierPaiementView(APIView):
             id_user=request.user,
         )
 
-        # TODO INTEGRATION : appel réel à l'agrégateur (Campay/Monetbil/...)
-        # pour déclencher le push USSD ; gérer le multi-agrégateur avec
-        # bascule automatique en cas d'indisponibilité (CDC 7.4/9.1).
-        # Le délai de validation du push est de 30 à 60 secondes (CDC 9.1) :
-        # si non validé dans ce délai, la transaction bascule à "ECHOUEE".
+        # ⚠️ Si `agregateur` correspond à un type ENUM Postgres restreint
+        # (ex: 'Campay'/'Monetbil'/'Maviance'/'Smobilpay', cf. CDC 7.1), cet
+        # INSERT échoue avec une erreur DB tant que 'NotchPay' n'a pas été
+        # ajouté à l'ENUM côté SQL, ex. :
+        #   ALTER TYPE enum_agregateur ADD VALUE IF NOT EXISTS 'NotchPay';
+        # (adapter le nom du type à celui réellement utilisé dans axel.sql).
 
-        return Response(
-            PaiementsSerializer(paiement).data,
-            status=status.HTTP_202_ACCEPTED,
-        )
+        # Appel réel à NotchPay : initialisation de la transaction +
+        # déclenchement du push USSD direct sur le canal Mobile Money choisi
+        # (CDC 9.1). `id_paiement` sert de référence externe NotchPay — pas
+        # besoin de stocker d'identifiant NotchPay supplémentaire en base.
+        #
+        # ⚠️ MODE SANDBOX (settings.NOTCHPAY_SANDBOX_FORCER_MONTANT_ZERO) :
+        # le montant RÉELLEMENT transmis à NotchPay est alors forcé à 0
+        # FCFA, quel que soit `montant` ci-dessus — voir
+        # `api/services/notchpay.py` pour le détail. `paiement.montant_fcfa`
+        # continue de refléter le vrai montant métier (RG-07).
+        try:
+            resultat_notchpay = notchpay.initialiser_paiement(
+                reference=paiement.id_paiement,
+                montant_fcfa=montant,
+                email=request.user.email,
+                telephone=numero_mobile_money,
+                operateur=operateur,
+                description=f"{self.TYPE_PAIEMENT_MAP[type_paiement]} — {reference_cible}",
+            )
+        except NotchPayError as exc:
+            logger.error("Initialisation NotchPay échouée (paiement=%s) : %s", paiement.id_paiement, exc)
+            paiement.statut = "Échoué"
+            paiement.save(update_fields=["statut"])
+            return Response(
+                {"detail": "L'agrégateur de paiement n'a pas pu être contacté. Veuillez réessayer."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        reponse = PaiementsSerializer(paiement).data
+        # Champs informatifs, non persistés en base (cf. commentaire de
+        # `notchpay.initialiser_paiement`) : utiles au client pour afficher
+        # un lien de secours (`authorization_url`) si le direct-charge USSD
+        # ne se déclenche pas, et pour être transparent en sandbox sur le
+        # montant réellement débité côté agrégateur de test.
+        reponse["notchpay_authorization_url"] = resultat_notchpay["authorization_url"]
+        reponse["montant_envoye_agregateur_fcfa"] = resultat_notchpay["montant_envoye_fcfa"]
+
+        return Response(reponse, status=status.HTTP_202_ACCEPTED)
 
 
 class WebhookPaiementView(APIView):
@@ -1804,58 +1955,111 @@ class WebhookPaiementView(APIView):
 
         # Finalisation métier selon le type de paiement (valeurs ENUM
         # 'Recharge_Prepayee' / 'Facture_Postpayee', cf. InitierPaiementView).
+        # Logique extraite en fonctions module-level (voir plus haut) pour
+        # être partagée avec `NotchPayWebhookView`.
         if paiement.type_paiement == "Recharge_Prepayee":
-            self._finaliser_recharge(paiement)
+            finaliser_recharge_paiement(paiement)
         elif paiement.type_paiement == "Facture_Postpayee":
-            self._finaliser_facture(paiement)
+            finaliser_facture_paiement(paiement)
 
         return Response({"detail": "Paiement confirmé."}, status=status.HTTP_200_OK)
 
-    def _finaliser_recharge(self, paiement):
-        """
-        Génère le jeton STS à 20 chiffres après confirmation (CDC 5.3/9).
-        RG-11 : en cas d'échec de génération, la transaction n'est jamais
-        clôturée sur un statut ambigu — elle reste "EN_ATTENTE_JETON" et
-        fait l'objet d'un suivi explicite jusqu'à délivrance tardive ou
-        remboursement automatique.
-        """
-        tx = get_object_or_404(TransactionsPrepayees, pk=paiement.reference_cible)
-        try:
-            # TODO INTEGRATION : appel réel à l'API Eneo/IoT pour générer le
-            # jeton STS. Cet appel, potentiellement lent, doit être isolé
-            # dans un traitement asynchrone (file d'attente + worker), pas
-            # exécuté en synchrone dans une transaction DB (CDC 8.2).
-            token = "".join(secrets.choice(string.digits) for _ in range(20))
-            # Chiffrement AES-256-GCM réel avant stockage (api/crypto.py) :
-            # `tx.token_genere` ne contient jamais le jeton en clair, mais
-            # (nonce || ciphertext || tag) encodé en base64. Le
-            # déchiffrement pour réaffichage au client se fait à la volée
-            # dans TransactionsPrepayeesSerializer (TokenHistoriqueView,
-            # AchatCreditView, ExportDataView...), jamais ici en écriture.
-            tx.token_genere = encrypt_token(token)
-            tx.statut_paiement = "Réussie"
-            tx.save(update_fields=["token_genere", "statut_paiement"])
-            # TODO INTEGRATION : notification "Transactionnel" (cascade
-            # Push → WhatsApp → SMS) avec le jeton, + SMS de secours (5.3).
-        except Exception:
-            # ⚠️ `enum_statut_transaction` (axel.sql) ne contient QUE
-            # 'Initiée', 'Réussie', 'Échouée', 'Annulée', 'Remboursée' — pas
-            # de statut "en attente de jeton" distinct. Le paiement lui-même
-            # est déjà confirmé (Paiements.statut='Confirmé' plus haut) ; on
-            # laisse donc la transaction à 'Réussie' et on s'appuie sur
-            # `token_genere IS NULL` comme signal "jeton pas encore délivré"
-            # pour le suivi RG-11. Si vous voulez un vrai statut dédié,
-            # ajoutez une valeur à l'ENUM côté SQL (ex: 'En_Attente_Jeton').
-            tx.statut_paiement = "Réussie"
-            tx.save(update_fields=["statut_paiement"])
-            # TODO INTEGRATION : programmer une nouvelle tentative (retry
-            # exponentiel) et notifier le support si l'échec persiste (RG-11).
 
-    def _finaliser_facture(self, paiement):
-        """Marque la facture postpayée correspondante comme payée."""
-        facture = get_object_or_404(FacturesPostpayees, pk=paiement.reference_cible)
-        facture.statut = "Payée"
-        facture.save(update_fields=["statut"])
+class NotchPayWebhookView(APIView):
+    """
+    Point d'entrée dédié aux notifications NotchPay — URL de terminaison
+    convenue : `/api/webhooks/notchpay/` (à renseigner côté dashboard
+    NotchPay et dans `settings.NOTCHPAY_CALLBACK_URL`).
+
+    Reprend les mêmes garanties que `WebhookPaiementView` (RG-08, RG-09,
+    signature vérifiée avant tout traitement, journalisation Append-Only
+    dans `WebhookLogs`), adaptées au format NotchPay :
+    - signature HMAC-SHA256 dans l'en-tête `x-notchpay-signature`, vérifiée
+      via `notchpay.verifier_signature_webhook` sur le corps BRUT de la
+      requête (`request.body`), pas sur `request.data` re-sérialisé ;
+    - événement typique : {"event": "payment.complete", "data": {"reference":
+      ..., "amount": ..., "status": ...}} — `reference` correspond à notre
+      `Paiements.id_paiement` (transmis tel quel à l'initialisation).
+
+    ⚠️ RG-08 adapté au mode sandbox : le montant reçu est comparé au montant
+    RÉELLEMENT ENVOYÉ à NotchPay (`notchpay.montant_attendu_agregateur`,
+    0 FCFA en sandbox de test), PAS au montant métier `paiement.montant_fcfa`
+    — sinon chaque webhook de test déclencherait à tort une alerte de
+    fraude. Voir `api/services/notchpay.py` pour le détail de ce choix.
+    """
+    permission_classes = [permissions.AllowAny]  # authentifié via signature HMAC, pas JWT
+
+    @transaction.atomic
+    def post(self, request):
+        signature = request.headers.get("x-notchpay-signature", "")
+        signature_valide = notchpay.verifier_signature_webhook(request.body, signature)
+
+        payload = request.data
+        data = payload.get("data", payload)
+        evenement = payload.get("event", "")
+        reference = data.get("reference")
+
+        # Identifiant d'idempotence (RG-09) : l'id de transaction NotchPay
+        # si disponible, sinon un composite reference+événement (NotchPay
+        # peut renvoyer plusieurs événements pour une même transaction —
+        # ex. "payment.initiated" puis "payment.complete" — donc l'événement
+        # fait partie de la clé, contrairement à la seule `reference`).
+        id_evenement = str(data.get("id") or f"{reference}:{evenement}")
+
+        paiement = get_object_or_404(Paiements, pk=reference)
+
+        deja_traite = WebhookLogs.objects.filter(id_evenement_agregateur=id_evenement).exists()
+
+        WebhookLogs.objects.get_or_create(
+            id_evenement_agregateur=id_evenement,
+            defaults={
+                "id_webhook": f"WH-{secrets.token_hex(8).upper()}",
+                "payload_brut": payload,
+                "signature_hmac_valide": signature_valide,
+                "date_reception": timezone.now(),
+                "id_paiement": paiement,
+            },
+        )
+
+        if not signature_valide:
+            # On journalise mais on ne traite jamais un webhook non authentifié.
+            return Response({"detail": "Signature invalide, événement ignoré."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if deja_traite and paiement.statut == "Confirmé":
+            return Response({"detail": "Événement déjà traité."}, status=status.HTTP_200_OK)
+
+        # On ne finalise que sur l'événement de succès ; les autres
+        # événements NotchPay (initiated, failed, canceled...) sont
+        # journalisés ci-dessus mais ne déclenchent pas de finalisation.
+        if evenement not in ("payment.complete", "payment.success"):
+            if evenement in ("payment.failed", "payment.canceled"):
+                paiement.statut = "Échoué" if evenement == "payment.failed" else "Annulé"
+                paiement.save(update_fields=["statut"])
+            return Response({"detail": f"Événement '{evenement}' journalisé."}, status=status.HTTP_200_OK)
+
+        montant_webhook = float(data.get("amount", 0))
+        montant_attendu = notchpay.montant_attendu_agregateur(paiement.montant_fcfa)
+        if round(montant_webhook, 2) != round(montant_attendu, 2):
+            # RG-08 : écart de montant → blocage + alerte de fraude. Voir
+            # WebhookPaiementView pour la note sur l'ENUM `enum_statut_paiement`
+            # qui ne distingue pas "bloqué pour anomalie" de "Échoué".
+            paiement.statut = "Échoué"
+            paiement.save(update_fields=["statut"])
+            # TODO INTEGRATION : déclencher une alerte fraude vers le back-office.
+            return Response({"detail": "Écart de montant détecté, paiement bloqué."}, status=status.HTTP_409_CONFLICT)
+
+        paiement.statut = "Confirmé"
+        paiement.numero_recu = f"RECU-{secrets.token_hex(8).upper()}"
+        paiement.donnees_recu_json = payload
+        paiement.date_confirmation = timezone.now()
+        paiement.save(update_fields=["statut", "numero_recu", "donnees_recu_json", "date_confirmation"])
+
+        if paiement.type_paiement == "Recharge_Prepayee":
+            finaliser_recharge_paiement(paiement)
+        elif paiement.type_paiement == "Facture_Postpayee":
+            finaliser_facture_paiement(paiement)
+
+        return Response({"detail": "Paiement confirmé."}, status=status.HTTP_200_OK)
 
 
 class PaiementStatutView(generics.RetrieveAPIView):

@@ -13,18 +13,23 @@
 // masquées par des valeurs par défaut trompeuses) :
 //  1. `CompteursSerializer` ne renvoie que `id_adresse` (un entier) : il
 //     faut `GET /adresses/` pour résoudre le libellé. Fait ici.
-//  2. `SoldeCreditView` ne calcule PAS encore le solde net réel
-//     (`solde_kwh`/`solde_fcfa` valent toujours `null`, cf. commentaire
-//     "TODO INTEGRATION" côté vue) : on retombe sur le cumul des recharges
-//     confirmées (`solde_kwh_achete_total`), ce qui SURESTIME le solde
-//     réel dès qu'il y a eu de la consommation. Affiché avec ce
-//     correctif en attendant le branchement IoT/API Eneo.
-//  3. Aucun endpoint ne calcule une autonomie estimée en jours : ce champ
-//     reste `null` (l'UI doit l'afficher comme "non disponible" plutôt que
-//     d'inventer un chiffre).
-//  4. `token_genere` est stocké chiffré côté serveur (AES-256) sans étape
-//     de déchiffrement dans la vue actuelle : la valeur affichée n'est
-//     donc pas garantie être un jeton STS directement utilisable.
+//  2. CORRECTIF (finalisation module prépayé) : `SoldeCreditView` calcule
+//     désormais un solde net réel (`solde_kwh`/`solde_fcfa`), à partir d'un
+//     MODÈLE DE CONSOMMATION SIMULÉ documenté côté backend (donnée de test
+//     tant que la synchro IoT/API Eneo n'est pas branchée, §2.6 du CDC) —
+//     ce n'est plus le simple cumul des recharges (`solde_kwh_achete_total`)
+//     qui surestimait le solde réel. Ce dernier champ reste renvoyé par
+//     l'API à titre indicatif et sert uniquement de repli défensif
+//     ci-dessous si `solde_kwh` venait à manquer.
+//  3. `SoldeCreditView` renvoie également `jours_autonomie_estimes` (même
+//     modèle simulé) : lu ci-dessous et propagé sur `CompteurModel`, l'UI
+//     n'affiche "non disponible" que si le backend renvoie `null` (compteur
+//     sans historique de recharge suffisant pour estimer un rythme).
+//  4. CORRECTIF (audit du 24/07/2026, `api/crypto.py`) : `token_genere` est
+//     chiffré au repos (AES-256-GCM) côté serveur, mais déchiffré à la
+//     volée par `TransactionsPrepayeesSerializer` avant sérialisation — la
+//     valeur renvoyée par `getTokenHistorique`/`getSoldeCredit` est donc
+//     bien le jeton STS en clair, prêt à être affiché/saisi tel quel.
 //  5. CORRECTIF (audit du 24/07/2026) : `GET /users/recherche/?telephone=`
 //     (`UserRechercheView` côté backend, RG-02) permet désormais de
 //     retrouver un tiers par son numéro exact avant de créer une
@@ -509,7 +514,10 @@ class EneoRepository {
   ) async {
     try {
       final solde = await _api.getSoldeCredit(idCompteur);
-      // cf. limite (2) documentée en tête de fichier.
+      // cf. limite (2) documentée en tête de fichier : `solde_kwh` est
+      // désormais le solde net réel renvoyé par le backend ; le repli sur
+      // `solde_kwh_achete_total` ne joue plus que si l'API venait à ne pas
+      // renvoyer `solde_kwh` (ex: ancienne réponse en cache).
       final soldeKwh = (solde['solde_kwh'] as num?)?.toDouble() ??
           (solde['solde_kwh_achete_total'] as num?)?.toDouble() ??
           double.tryParse('${solde['solde_kwh_achete_total']}') ??
@@ -520,6 +528,9 @@ class EneoRepository {
       final derniereSync = solde['derniere_synchronisation'] != null
           ? DateTime.tryParse('${solde['derniere_synchronisation']}')
           : null;
+      // cf. limite (3) : arrondi à l'entier le plus proche pour affichage
+      // ("X jours"), le backend renvoyant une valeur à une décimale.
+      final joursAutonomie = (solde['jours_autonomie_estimes'] as num?)?.round();
 
       String? dernierToken;
       DateTime? dateDernierToken;
@@ -538,6 +549,7 @@ class EneoRepository {
         derniereMiseAJour: derniereSync ?? c.derniereMiseAJour,
         dernierToken: dernierToken,
         dateDernierToken: dateDernierToken,
+        joursAutonomieEstimes: joursAutonomie,
       );
     } catch (_) {
       // Le compteur reste affichable même si l'enrichissement échoue

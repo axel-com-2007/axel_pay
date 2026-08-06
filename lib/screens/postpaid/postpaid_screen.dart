@@ -23,6 +23,9 @@ import '../../widgets/animations/animations.dart';
 import '../../widgets/app_card.dart';
 import '../../widgets/offline_banner.dart';
 import '../../widgets/status_badge.dart';
+import '../../shared/widgets/app_bottom_sheet.dart';
+import '../../shared/widgets/app_text_field.dart';
+import '../../design_system/buttons/app_button.dart';
 import '../payment/payment_screen.dart';
 
 class PostpaidScreen extends StatefulWidget {
@@ -37,6 +40,10 @@ class _PostpaidScreenState extends State<PostpaidScreen> {
   final _repo = EneoRepository();
   bool afficherEnFcfa = false;
   bool historiqueComplet = false;
+
+  /// REFONTE — filtre de tri des factures sur "Mes factures" (Tous /
+  /// Payée / En cours / Impayée). `null` = Tous.
+  StatutFacture? _filtreStatut;
 
   int? get _idCompteur => int.tryParse(widget.compteur.id);
 
@@ -127,6 +134,9 @@ class _PostpaidScreenState extends State<PostpaidScreen> {
           }
           final factures = snapshot.data ?? const [];
           final impayees = factures.where((f) => f.statut == StatutFacture.impayee).toList();
+          final facturesAffichees = _filtreStatut == null
+              ? factures
+              : factures.where((f) => f.statut == _filtreStatut).toList();
 
           if (factures.isEmpty) return const _AucuneFacture();
 
@@ -158,20 +168,62 @@ class _PostpaidScreenState extends State<PostpaidScreen> {
                         }),
               ),
               const SizedBox(height: 12),
-              ...factures.asMap().entries.map((entry) => FadeSlideIn(
-                    index: entry.key,
-                    child: _FactureTile(
-                      facture: entry.value,
-                      onSignaler: () => _signalerAnomalie(context, entry.value),
-                      onTelecharger: () => _telechargerRecu(context, entry.value),
-                      onPayer: entry.value.statut == StatutFacture.impayee
-                          ? () => _payer(entry.value)
-                          : null,
+              _buildFiltreFactures(),
+              const SizedBox(height: 12),
+              if (facturesAffichees.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 20),
+                  child: Center(
+                    child: Text(
+                      'Aucune facture ne correspond à ce filtre.',
+                      style: AppTextStyles.bodyMuted,
                     ),
-                  )),
+                  ),
+                )
+              else
+                ...facturesAffichees.asMap().entries.map((entry) => FadeSlideIn(
+                      index: entry.key,
+                      child: _FactureTile(
+                        facture: entry.value,
+                        onSignaler: () => _signalerAnomalie(context, entry.value),
+                        onTelecharger: () => _telechargerRecu(context, entry.value),
+                        onPayer: entry.value.statut == StatutFacture.impayee
+                            ? () => _payer(entry.value)
+                            : null,
+                      ),
+                    )),
             ],
           );
         },
+      ),
+    );
+  }
+
+  /// Rangée de puces "Tous / Payée / En cours / Impayée" filtrant la
+  /// liste des factures affichée sous "Historique" (les autres blocs de
+  /// l'écran — bannière impayée, graphique — restent inchangés, ils ne
+  /// portent pas sur une liste à filtrer).
+  Widget _buildFiltreFactures() {
+    Widget puce(String label, StatutFacture? valeur) {
+      return Padding(
+        padding: const EdgeInsets.only(right: 8),
+        child: _MetricToggleButton(
+          label: label,
+          selected: _filtreStatut == valeur,
+          onTap: () => setState(() => _filtreStatut = valeur),
+        ),
+      );
+    }
+
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        children: [
+          puce('Tous', null),
+          puce('Payée', StatutFacture.payee),
+          puce('En cours', StatutFacture.enCours),
+          puce('Impayée', StatutFacture.impayee),
+        ],
       ),
     );
   }
@@ -257,47 +309,89 @@ class _PostpaidScreenState extends State<PostpaidScreen> {
                     child: Text('Pas encore assez de données', style: AppTextStyles.bodyMuted),
                   );
                 }
-                return BarChart(
-                  BarChartData(
-                    gridData: const FlGridData(show: false),
-                    borderData: FlBorderData(show: false),
-                    titlesData: FlTitlesData(
-                      leftTitles: const AxisTitles(
-                        sideTitles: SideTitles(showTitles: false),
-                      ),
-                      rightTitles: const AxisTitles(
-                        sideTitles: SideTitles(showTitles: false),
-                      ),
-                      topTitles: const AxisTitles(
-                        sideTitles: SideTitles(showTitles: false),
-                      ),
-                      bottomTitles: AxisTitles(
-                        sideTitles: SideTitles(
-                          showTitles: true,
-                          getTitlesWidget: (value, meta) {
-                            final i = value.toInt();
-                            if (i < 0 || i >= points.length) return const SizedBox();
-                            return Padding(
-                              padding: const EdgeInsets.only(top: 6),
-                              child: Text(points[i].moisLabel, style: AppTextStyles.caption),
-                            );
-                          },
+
+                // Chaque barre + son étiquette a besoin d'un minimum d'espace
+                // horizontal pour éviter que les mois se chevauchent
+                // ("Jan", "Fév", "Mar"... qui se superposent) quand il y a
+                // beaucoup de points. On calcule la largeur nécessaire et,
+                // si elle dépasse l'espace dispo, on rend le graphique
+                // défilable horizontalement plutôt que de tasser les textes.
+                const double slotWidth = 46;
+                final double neededWidth = points.length * slotWidth;
+
+                Widget buildChart(double width) {
+                  return SizedBox(
+                    width: width,
+                    child: BarChart(
+                      BarChartData(
+                        gridData: const FlGridData(show: false),
+                        borderData: FlBorderData(show: false),
+                        alignment: BarChartAlignment.spaceAround,
+                        titlesData: FlTitlesData(
+                          leftTitles: const AxisTitles(
+                            sideTitles: SideTitles(showTitles: false),
+                          ),
+                          rightTitles: const AxisTitles(
+                            sideTitles: SideTitles(showTitles: false),
+                          ),
+                          topTitles: const AxisTitles(
+                            sideTitles: SideTitles(showTitles: false),
+                          ),
+                          bottomTitles: AxisTitles(
+                            sideTitles: SideTitles(
+                              showTitles: true,
+                              reservedSize: 28,
+                              interval: 1,
+                              getTitlesWidget: (value, meta) {
+                                final i = value.toInt();
+                                if (i < 0 || i >= points.length) return const SizedBox();
+                                return Padding(
+                                  padding: const EdgeInsets.only(top: 8),
+                                  child: SizedBox(
+                                    width: slotWidth,
+                                    child: Text(
+                                      points[i].moisLabel,
+                                      style: AppTextStyles.caption,
+                                      textAlign: TextAlign.center,
+                                      maxLines: 1,
+                                      softWrap: false,
+                                      overflow: TextOverflow.visible,
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                          ),
                         ),
+                        barGroups: List.generate(points.length, (i) {
+                          final point = points[i];
+                          final value = afficherEnFcfa ? point.fcfa / 100 : point.kwh;
+                          return BarChartGroupData(x: i, barRods: [
+                            BarChartRodData(
+                              toY: value,
+                              color: AppColors.primary,
+                              width: 18,
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                          ]);
+                        }),
                       ),
                     ),
-                    barGroups: List.generate(points.length, (i) {
-                      final point = points[i];
-                      final value = afficherEnFcfa ? point.fcfa / 100 : point.kwh;
-                      return BarChartGroupData(x: i, barRods: [
-                        BarChartRodData(
-                          toY: value,
-                          color: AppColors.primary,
-                          width: 18,
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                      ]);
-                    }),
-                  ),
+                  );
+                }
+
+                return LayoutBuilder(
+                  builder: (context, constraints) {
+                    final double availableWidth = constraints.maxWidth;
+                    if (neededWidth <= availableWidth) {
+                      return buildChart(availableWidth);
+                    }
+                    return SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      physics: const BouncingScrollPhysics(),
+                      child: buildChart(neededWidth),
+                    );
+                  },
                 );
               },
             ),
@@ -314,58 +408,37 @@ class _PostpaidScreenState extends State<PostpaidScreen> {
   }
 
   void _signalerAnomalie(BuildContext context, FactureModel facture) {
-    showModalBottomSheet(
+    final controller = TextEditingController();
+    AppBottomSheet.show(
       context: context,
-      backgroundColor: Colors.white,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(AppRadius.sheet)),
+      title: 'Signaler une anomalie — ${facture.moisFacturation}',
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          AppTextField(
+            controller: controller,
+            maxLines: 3,
+            hintText: 'Décrivez le problème rencontré (montant incorrect, index erroné...)',
+          ),
+          const SizedBox(height: 16),
+          AppButton(
+            label: 'Envoyer au support',
+            onPressed: () async {
+              final description = controller.text.trim();
+              Navigator.pop(context);
+              try {
+                await _repo.signalerAnomalie(facture.id, description);
+                if (!mounted) return;
+                _showSnack(context, 'Signalement transmis au support technique');
+              } on ApiException catch (e) {
+                if (!mounted) return;
+                _showSnack(context, e.message);
+              }
+            },
+          ),
+        ],
       ),
-      builder: (ctx) {
-        final controller = TextEditingController();
-        return Padding(
-          padding: EdgeInsets.only(
-            left: 20,
-            right: 20,
-            top: 20,
-            bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('Signaler une anomalie — ${facture.moisFacturation}',
-                  style: AppTextStyles.h3),
-              const SizedBox(height: 12),
-              TextField(
-                controller: controller,
-                maxLines: 3,
-                decoration: const InputDecoration(
-                  hintText: 'Décrivez le problème rencontré (montant incorrect, index erroné...)',
-                ),
-              ),
-              const SizedBox(height: 16),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: () async {
-                    final description = controller.text.trim();
-                    Navigator.pop(ctx);
-                    try {
-                      await _repo.signalerAnomalie(facture.id, description);
-                      if (!mounted) return;
-                      _showSnack(context, 'Signalement transmis au support technique');
-                    } on ApiException catch (e) {
-                      if (!mounted) return;
-                      _showSnack(context, e.message);
-                    }
-                  },
-                  child: const Text('Envoyer au support'),
-                ),
-              ),
-            ],
-          ),
-        );
-      },
     );
   }
 

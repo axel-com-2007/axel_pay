@@ -14,7 +14,6 @@
 // (`GET /compteurs/<id>/tokens/`).
 // ============================================================
 
-import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import '../../api/api_exception.dart';
 import '../../data/connectivity_gate.dart';
@@ -25,6 +24,7 @@ import '../../widgets/animations/animations.dart';
 import '../../widgets/app_card.dart';
 import '../../widgets/offline_banner.dart';
 import '../../widgets/primary_button.dart';
+import '../../shared/widgets/meter_gauge.dart';
 import '../payment/payment_screen.dart';
 
 /// Grille tarifaire simplifiée pour la conversion en direct côté frontend
@@ -86,7 +86,6 @@ class _PrepaidScreenState extends State<PrepaidScreen> {
   Widget build(BuildContext context) {
     final c = widget.compteur;
     final soldeMax = 100.0; // borne haute indicative pour la jauge visuelle
-    final ratio = ((c.soldeKwh ?? 0) / soldeMax).clamp(0.0, 1.0);
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -104,41 +103,13 @@ class _PrepaidScreenState extends State<PrepaidScreen> {
           AppCard(
             child: Column(
               children: [
-                SizedBox(
-                  height: 190,
-                  child: Stack(
-                    alignment: Alignment.center,
-                    children: [
-                      TweenAnimationBuilder<double>(
-                        tween: Tween(begin: 0, end: ratio),
-                        duration: const Duration(milliseconds: 900),
-                        curve: Curves.easeOutCubic,
-                        builder: (context, animatedRatio, _) => CustomPaint(
-                          size: const Size(190, 190),
-                          painter: _GaugePainter(ratio: animatedRatio),
-                        ),
-                      ),
-                      Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          AnimatedCounter(
-                            value: c.soldeKwh ?? 0,
-                            formatter: (v) => v.toStringAsFixed(1),
-                            style: const TextStyle(fontSize: 34, fontWeight: FontWeight.bold),
-                          ),
-                          const Text('kWh restants', style: AppTextStyles.bodyMuted),
-                          const SizedBox(height: 4),
-                          Text(
-                            c.soldeFcfaEquivalent != null
-                                ? '≈ ${formatFcfa(c.soldeFcfaEquivalent!)}'
-                                : '≈ non disponible',
-                            style: const TextStyle(
-                                color: AppColors.primaryDark, fontWeight: FontWeight.w700),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
+                MeterGaugeWidget(
+                  value: c.soldeKwh ?? 0,
+                  maxValue: soldeMax,
+                  unitLabel: 'kWh restants',
+                  subLabel: c.soldeFcfaEquivalent != null
+                      ? '≈ ${formatFcfa(c.soldeFcfaEquivalent!)}'
+                      : '≈ non disponible',
                 ),
                 const Divider(height: 28),
                 Row(
@@ -361,8 +332,8 @@ class _TokenCard extends StatelessWidget {
           const SizedBox(height: 6),
           const Text(
             'Consultable hors-ligne — saisissez ce code directement sur votre compteur. '
-            'Si le code affiché ne correspond pas au format habituel, contactez le support : '
-            'le déchiffrement du jeton côté serveur n’est pas encore finalisé.',
+            'Génération de test tant que le raccordement à l’API/IoT Eneo n’est pas '
+            'finalisé : le code n’active donc pas encore un vrai compteur.',
             style: AppTextStyles.caption,
           ),
           const SizedBox(height: 12),
@@ -434,49 +405,4 @@ String _formatDateCourt(DateTime date) {
   return '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')}/${date.year}';
 }
 
-/// Jauge circulaire dessinée à la main (évite une dépendance externe
-/// supplémentaire pour un simple indicateur de solde).
-class _GaugePainter extends CustomPainter {
-  final double ratio; // 0.0 -> 1.0
 
-  _GaugePainter({required this.ratio});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final center = Offset(size.width / 2, size.height / 2);
-    final radius = size.width / 2 - 10;
-
-    final bgPaint = Paint()
-      ..color = AppColors.divider
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 14
-      ..strokeCap = StrokeCap.round;
-
-    final fgPaint = Paint()
-      ..color = ratio < 0.2 ? AppColors.danger : AppColors.primary
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 14
-      ..strokeCap = StrokeCap.round;
-
-    const startAngle = -math.pi * 1.25;
-    const sweepAngleMax = math.pi * 1.5;
-
-    canvas.drawArc(
-      Rect.fromCircle(center: center, radius: radius),
-      startAngle,
-      sweepAngleMax,
-      false,
-      bgPaint,
-    );
-    canvas.drawArc(
-      Rect.fromCircle(center: center, radius: radius),
-      startAngle,
-      sweepAngleMax * ratio,
-      false,
-      fgPaint,
-    );
-  }
-
-  @override
-  bool shouldRepaint(covariant _GaugePainter oldDelegate) => oldDelegate.ratio != ratio;
-}

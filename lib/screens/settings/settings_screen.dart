@@ -26,12 +26,15 @@
 
 import 'package:flutter/material.dart';
 import 'package:lottie/lottie.dart';
+import 'package:provider/provider.dart';
 import '../../api/api_exception.dart';
+import '../../api/auth_service.dart';
 import '../../data/eneo_repository.dart';
 import '../../models/models.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/animations/animations.dart';
 import '../../widgets/app_card.dart';
+import '../../shared/widgets/app_bottom_sheet.dart';
 import '../auth/login_screen.dart';
 
 const List<Map<String, String>> _faq = [
@@ -54,7 +57,14 @@ const List<Map<String, String>> _faq = [
 ];
 
 class SettingsScreen extends StatefulWidget {
-  const SettingsScreen({super.key});
+  /// Si `true`, ouvre directement le bottom sheet "Préférences de
+  /// notification" au premier frame (juste après le montage de l'écran),
+  /// sans attendre d'action de l'utilisateur. Utilisé par le raccourci
+  /// "Activer rappel" de l'accueil, pour éviter un aller-retour inutile
+  /// via l'écran Paramètres complet.
+  final bool ouvrirNotificationsAuDemarrage;
+
+  const SettingsScreen({super.key, this.ouvrirNotificationsAuDemarrage = false});
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -105,6 +115,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void initState() {
     super.initState();
     _profil = _repo.getProfile();
+    // Le bottom sheet ne dépend que de `prefs` (déjà initialisé plus haut)
+    // et du `context` — pas besoin d'attendre `_profil` pour l'afficher.
+    if (widget.ouvrirNotificationsAuDemarrage) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _ouvrirNotifications();
+      });
+    }
   }
 
   @override
@@ -193,6 +210,39 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
             FadeSlideIn(
               index: 1,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const SectionHeader(title: 'Sécurité'),
+                  const SizedBox(height: 6),
+                  AppCard(
+                    child: Column(
+                      children: [
+                        SettingsTile(
+                          icon: Icons.phone_iphone,
+                          iconColor: AppColors.info,
+                          title: 'Changer mon numéro de téléphone',
+                          subtitle: user?.telephone ?? '',
+                          onTap: () => _ouvrirChangementTelephone(user),
+                        ),
+                        const Divider(height: 1),
+                        SettingsTile(
+                          icon: Icons.lock_outline,
+                          iconColor: AppColors.warning,
+                          title: 'Changer mon mot de passe',
+                          subtitle: 'Un code de vérification vous sera envoyé',
+                          onTap: () => _ouvrirChangementMotDePasse(user),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+
+            FadeSlideIn(
+              index: 2,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -336,13 +386,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   void _choisirLangue() {
-    showModalBottomSheet(
+    AppBottomSheet.show(
       context: context,
-      backgroundColor: Colors.white,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(AppRadius.sheet)),
-      ),
-      builder: (ctx) => Column(
+      title: 'Langue',
+      isScrollControlled: false,
+      child: Column(
         mainAxisSize: MainAxisSize.min,
         children: ['Français', 'English'].map((l) {
           return RadioListTile<String>(
@@ -351,7 +399,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             title: Text(l),
             onChanged: (v) {
               setState(() => langue = v!);
-              Navigator.pop(ctx);
+              Navigator.pop(context);
             },
           );
         }).toList(),
@@ -362,7 +410,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void _ouvrirNotifications() {
     showModalBottomSheet(
       context: context,
-      backgroundColor: Colors.white,
+      backgroundColor: AppColors.white,
       isScrollControlled: true,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(AppRadius.sheet)),
@@ -418,8 +466,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (ctx) => const AlertDialog(
-        content: LottieLoader(size: 90, label: 'Préparation de votre export…'),
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.card)),
+        content: const LottieLoader(size: 90, label: 'Préparation de votre export…'),
       ),
     );
     try {
@@ -430,6 +479,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       showDialog(
         context: context,
         builder: (ctx) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.card)),
           title: const Text('Export prêt'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
@@ -468,6 +518,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.card)),
         title: const Text('Supprimer mon compte ?'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
@@ -506,6 +557,162 @@ class _SettingsScreenState extends State<SettingsScreen> {
             child: const Text('Confirmer', style: TextStyle(color: AppColors.danger)),
           ),
         ],
+      ),
+    );
+  }
+
+  void _ouvrirChangementTelephone(UserModel? user) {
+    final telephoneController = TextEditingController();
+    final motDePasseController = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.card)),
+        title: const Text('Changer mon numéro'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Numéro actuel : ${user?.telephone ?? ''}', style: AppTextStyles.bodyMuted),
+            const SizedBox(height: 12),
+            TextField(
+              controller: telephoneController,
+              keyboardType: TextInputType.phone,
+              decoration: const InputDecoration(hintText: 'Nouveau numéro (ex: +237690000000)'),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: motDePasseController,
+              obscureText: true,
+              decoration: const InputDecoration(hintText: 'Confirmez votre mot de passe'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Annuler')),
+          TextButton(
+            onPressed: () async {
+              final nouveauTelephone = telephoneController.text.trim();
+              final motDePasse = motDePasseController.text;
+              Navigator.pop(ctx);
+              try {
+                await context.read<AuthService>().changePhoneNumber(
+                      nouveauTelephone: nouveauTelephone,
+                      motDePasseConfirmation: motDePasse,
+                    );
+                if (!mounted) return;
+                setState(() => _profil = _repo.getProfile());
+                _showSnack('Numéro mis à jour. Vérifiez le code envoyé par SMS si demandé.');
+              } on ApiException catch (e) {
+                if (!mounted) return;
+                _showSnack(e.message);
+              }
+            },
+            child: const Text('Confirmer'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Réutilise le flux "mot de passe oublié" déjà existant côté backend
+  /// (`PasswordResetRequestView` / `PasswordResetConfirmView`) : il n'existe
+  /// pas d'endpoint dédié "changer mon mot de passe en étant connecté" dans
+  /// la CDC — seule la procédure par code (SMS/e-mail) est spécifiée (5.1).
+  void _ouvrirChangementMotDePasse(UserModel? user) {
+    final identifiant = user?.telephone ?? user?.email ?? '';
+    final codeController = TextEditingController();
+    final nouveauMotDePasseController = TextEditingController();
+    bool codeEnvoye = false;
+    bool envoiEnCours = false;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.white,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(AppRadius.sheet)),
+      ),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setModalState) => Padding(
+          padding: EdgeInsets.fromLTRB(20, 20, 20, MediaQuery.of(ctx).viewInsets.bottom + 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Changer mon mot de passe', style: AppTextStyles.h3),
+              const SizedBox(height: 10),
+              if (!codeEnvoye) ...[
+                Text(
+                  'Un code de vérification sera envoyé à $identifiant.',
+                  style: AppTextStyles.bodyMuted,
+                ),
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: envoiEnCours
+                        ? null
+                        : () async {
+                            setModalState(() => envoiEnCours = true);
+                            try {
+                              await context
+                                  .read<AuthService>()
+                                  .requestPasswordReset(identifiant: identifiant);
+                              setModalState(() {
+                                envoiEnCours = false;
+                                codeEnvoye = true;
+                              });
+                            } on ApiException catch (e) {
+                              setModalState(() => envoiEnCours = false);
+                              if (!mounted) return;
+                              _showSnack(e.message);
+                            }
+                          },
+                    child: Text(envoiEnCours ? 'Envoi…' : 'Recevoir le code'),
+                  ),
+                ),
+              ] else ...[
+                TextField(
+                  controller: codeController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(hintText: 'Code reçu par SMS/e-mail'),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: nouveauMotDePasseController,
+                  obscureText: true,
+                  decoration: const InputDecoration(hintText: 'Nouveau mot de passe'),
+                ),
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: envoiEnCours
+                        ? null
+                        : () async {
+                            setModalState(() => envoiEnCours = true);
+                            try {
+                              await context.read<AuthService>().confirmPasswordReset(
+                                    token: codeController.text.trim(),
+                                    nouveauMotDePasse: nouveauMotDePasseController.text,
+                                  );
+                              if (!mounted) return;
+                              Navigator.pop(ctx);
+                              _showSnack('Mot de passe mis à jour avec succès.');
+                            } on ApiException catch (e) {
+                              setModalState(() => envoiEnCours = false);
+                              if (!mounted) return;
+                              _showSnack(e.message);
+                            }
+                          },
+                    child: Text(envoiEnCours ? 'Validation…' : 'Valider le nouveau mot de passe'),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
       ),
     );
   }

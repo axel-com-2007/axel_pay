@@ -397,19 +397,27 @@ class ConsommationPoint {
   final double kwh;
   final double fcfa;
 
+  /// Date complète du point (1er jour de la période), conservée en plus
+  /// du libellé court pour permettre de filtrer la série sur une plage
+  /// de dates (ex : calendrier "historique de consommation").
+  final DateTime periode;
+
   const ConsommationPoint({
     required this.moisLabel,
     required this.kwh,
     required this.fcfa,
+    required this.periode,
   });
 
   /// Mappe une entrée de la `serie` renvoyée par `ConsommationGraphView`
   /// (`{"periode": "2026-06-01", "kwh": ..., "fcfa": ...}`).
   factory ConsommationPoint.fromJson(Map<String, dynamic> json) {
+    final periode = _date(json['periode']);
     return ConsommationPoint(
-      moisLabel: moisLabelCourt(_date(json['periode'])),
+      moisLabel: moisLabelCourt(periode),
       kwh: _num(json['kwh']),
       fcfa: _num(json['fcfa']),
+      periode: periode,
     );
   }
 }

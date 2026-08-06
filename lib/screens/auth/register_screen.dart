@@ -397,7 +397,7 @@ class _HeaderBanner extends StatelessWidget {
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
               decoration: BoxDecoration(
-                color: AppColors.gold,
+                color: AppColors.secondaryGreen,
                 borderRadius: BorderRadius.circular(AppRadius.chip),
                 boxShadow: [
                   BoxShadow(color: Colors.black.withOpacity(0.15), blurRadius: 8),

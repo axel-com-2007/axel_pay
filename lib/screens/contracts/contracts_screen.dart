@@ -16,6 +16,7 @@
 import 'package:flutter/material.dart';
 import 'package:lottie/lottie.dart';
 import '../../api/api_exception.dart';
+import '../../data/contrat_selection.dart';
 import '../../data/eneo_repository.dart';
 import '../../models/models.dart';
 import '../../theme/app_theme.dart';
@@ -23,11 +24,111 @@ import '../../widgets/animations/animations.dart';
 import '../../widgets/app_card.dart';
 import '../../widgets/offline_banner.dart';
 import '../../widgets/status_badge.dart';
+import '../../shared/widgets/app_dialog.dart';
+import '../../shared/widgets/app_loader.dart';
+import '../../shared/widgets/app_bottom_sheet.dart';
+import '../../shared/widgets/app_text_field.dart';
+import '../../design_system/buttons/app_button.dart';
 import '../meters/meters_screen.dart';
 import 'contrat_factures_screen.dart';
 
+// ============================================================
+// TRI DES CONTRATS — filtre de la barre de recherche
+// ============================================================
+// Deux familles de tri : date d'ancienneté, ou montant (croissant /
+// décroissant). Le bottom sheet est partagé entre l'icône "filtre"
+// (Icons.tune_rounded) de la barre de recherche d'accueil et l'écran
+// Contrats lui-même, mais le tri est TOUJOURS appliqué et affiché sur
+// cet écran (voir cahier des charges).
+// ============================================================
+
+enum ContratSortOption {
+  anciennetePlusRecent,
+  anciennetePlusAncien,
+  montantCroissant,
+  montantDecroissant,
+}
+
+extension ContratSortOptionX on ContratSortOption {
+  String get label {
+    switch (this) {
+      case ContratSortOption.anciennetePlusRecent:
+        return 'Ancienneté : plus récent d’abord';
+      case ContratSortOption.anciennetePlusAncien:
+        return 'Ancienneté : plus ancien d’abord';
+      case ContratSortOption.montantCroissant:
+        return 'Montant croissant';
+      case ContratSortOption.montantDecroissant:
+        return 'Montant décroissant';
+    }
+  }
+
+  bool get parMontant =>
+      this == ContratSortOption.montantCroissant || this == ContratSortOption.montantDecroissant;
+
+  IconData get icon => parMontant ? Icons.payments_outlined : Icons.event_outlined;
+}
+
+class ContratSortSheet {
+  ContratSortSheet._();
+
+  static Future<ContratSortOption?> choose(BuildContext context) {
+    return AppBottomSheet.show<ContratSortOption>(
+      context: context,
+      title: 'Trier les contrats',
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: const [
+          Text('Par date d’ancienneté', style: AppTextStyles.label),
+          _SortTile(
+            option: ContratSortOption.anciennetePlusRecent,
+            label: 'Du plus récent au plus ancien',
+          ),
+          _SortTile(
+            option: ContratSortOption.anciennetePlusAncien,
+            label: 'Du plus ancien au plus récent',
+          ),
+          SizedBox(height: AppSpacing.lg),
+          Text('Par montant', style: AppTextStyles.label),
+          _SortTile(
+            option: ContratSortOption.montantCroissant,
+            label: 'Montant croissant',
+          ),
+          _SortTile(
+            option: ContratSortOption.montantDecroissant,
+            label: 'Montant décroissant',
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SortTile extends StatelessWidget {
+  final ContratSortOption option;
+  final String label;
+  const _SortTile({required this.option, required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: Icon(option.icon, color: AppColors.primaryDark),
+      title: Text(label, style: AppTextStyles.body),
+      trailing: const Icon(Icons.chevron_right, color: AppColors.textMuted),
+      onTap: () => Navigator.of(context).pop(option),
+    );
+  }
+}
+
 class ContractsScreen extends StatefulWidget {
-  const ContractsScreen({super.key});
+  /// Tri à appliquer dès l'ouverture — utilisé quand on arrive depuis
+  /// l'icône "filtre" de la barre de recherche d'accueil, qui propose
+  /// déjà le choix avant de naviguer ici.
+  final ContratSortOption? initialSort;
+
+  const ContractsScreen({super.key, this.initialSort});
 
   @override
   State<ContractsScreen> createState() => _ContractsScreenState();
@@ -37,8 +138,13 @@ class _ContractsScreenState extends State<ContractsScreen> {
   final _repo = EneoRepository();
 
   late Future<void> _chargement;
+  List<ContratModel> _contratsOriginal = [];
   List<ContratModel> contrats = [];
   String? erreur;
+
+  ContratSortOption? _sort;
+  final Map<String, double> _montantsParContrat = {};
+  bool _chargementMontants = false;
 
   @override
   void initState() {
@@ -50,12 +156,85 @@ class _ContractsScreenState extends State<ContractsScreen> {
     setState(() => erreur = null);
     try {
       final c = await _repo.getAllContrats();
-      setState(() => contrats = c);
+      setState(() {
+        _contratsOriginal = c;
+        contrats = List.of(c);
+      });
+      // Après un pull-to-refresh, on conserve le tri en cours ; à la
+      // première ouverture, on applique celui reçu depuis l'accueil.
+      final sortAReappliquer = _sort ?? widget.initialSort;
+      if (sortAReappliquer != null) {
+        _montantsParContrat.clear();
+        await _appliquerTri(sortAReappliquer);
+      }
     } on ApiException catch (e) {
       setState(() => erreur = e.message);
     } catch (_) {
       setState(() => erreur = 'Une erreur est survenue. Vérifiez votre connexion.');
     }
+  }
+
+  Future<void> _choisirTri() async {
+    final choix = await ContratSortSheet.choose(context);
+    if (choix != null) {
+      await _appliquerTri(choix);
+    }
+  }
+
+  Future<void> _appliquerTri(ContratSortOption option) async {
+    if (option.parMontant && _montantsParContrat.length < _contratsOriginal.length) {
+      setState(() => _chargementMontants = true);
+      await Future.wait(_contratsOriginal.map((contrat) async {
+        if (_montantsParContrat.containsKey(contrat.id)) return;
+        try {
+          final idContrat = int.tryParse(contrat.id);
+          if (idContrat == null) {
+            _montantsParContrat[contrat.id] = 0;
+            return;
+          }
+          // Montant dû = somme des factures impayées du contrat, tous
+          // compteurs confondus (cohérent avec "Montant dû sur les
+          // factures impayées" affiché à l'accueil).
+          final factures = await _repo.getContratFactures(idContrat, statut: 'Impayée');
+          _montantsParContrat[contrat.id] =
+              factures.fold<double>(0, (total, f) => total + f.montantFcfa);
+        } catch (_) {
+          _montantsParContrat[contrat.id] = 0;
+        }
+      }));
+      if (!mounted) return;
+      setState(() => _chargementMontants = false);
+    }
+
+    final trie = List<ContratModel>.of(_contratsOriginal);
+    switch (option) {
+      case ContratSortOption.anciennetePlusRecent:
+        trie.sort((a, b) => b.dateCreation.compareTo(a.dateCreation));
+        break;
+      case ContratSortOption.anciennetePlusAncien:
+        trie.sort((a, b) => a.dateCreation.compareTo(b.dateCreation));
+        break;
+      case ContratSortOption.montantCroissant:
+        trie.sort((a, b) => (_montantsParContrat[a.id] ?? 0)
+            .compareTo(_montantsParContrat[b.id] ?? 0));
+        break;
+      case ContratSortOption.montantDecroissant:
+        trie.sort((a, b) => (_montantsParContrat[b.id] ?? 0)
+            .compareTo(_montantsParContrat[a.id] ?? 0));
+        break;
+    }
+    if (!mounted) return;
+    setState(() {
+      _sort = option;
+      contrats = trie;
+    });
+  }
+
+  void _reinitialiserTri() {
+    setState(() {
+      _sort = null;
+      contrats = List.of(_contratsOriginal);
+    });
   }
 
   @override
@@ -104,12 +283,26 @@ class _ContractsScreenState extends State<ContractsScreen> {
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   const Text('Mes contrats', style: AppTextStyles.h2),
-                  IconButton(
-                    tooltip: 'Voir tous mes compteurs',
-                    icon: const Icon(Icons.speed_outlined, color: AppColors.primaryDark),
-                    onPressed: () => Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const MetersScreen()),
-                    ),
+                  Row(
+                    children: [
+                      IconButton(
+                        tooltip: 'Trier les contrats',
+                        icon: _chargementMontants
+                            ? const AppLoader.small()
+                            : Icon(Icons.tune_rounded,
+                                color: _sort != null
+                                    ? AppColors.primary
+                                    : AppColors.primaryDark),
+                        onPressed: _chargementMontants ? null : _choisirTri,
+                      ),
+                      IconButton(
+                        tooltip: 'Voir tous mes compteurs',
+                        icon: const Icon(Icons.speed_outlined, color: AppColors.primaryDark),
+                        onPressed: () => Navigator.of(context).push(
+                          MaterialPageRoute(builder: (_) => const MetersScreen()),
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),
@@ -119,6 +312,17 @@ class _ContractsScreenState extends State<ContractsScreen> {
                 'compteurs à un contrat pour en gérer l’accès et les factures.',
                 style: AppTextStyles.bodyMuted,
               ),
+              if (_sort != null) ...[
+                const SizedBox(height: 12),
+                InputChip(
+                  avatar: Icon(_sort!.icon, size: 18, color: AppColors.primaryDark),
+                  label: Text(_sort!.label, style: AppTextStyles.caption),
+                  onDeleted: _reinitialiserTri,
+                  deleteIcon: const Icon(Icons.close, size: 16),
+                  backgroundColor: AppColors.primary.withOpacity(0.08),
+                  side: BorderSide.none,
+                ),
+              ],
               const SizedBox(height: 20),
               if (contrats.isEmpty)
                 AppCard(
@@ -176,7 +380,14 @@ class _ContractsScreenState extends State<ContractsScreen> {
   /// directement à ses factures ; la gestion des compteurs/délégations
   /// (`ContratDetailScreen`) reste accessible depuis l'icône "Gérer ce
   /// contrat" de cet écran de factures.
+  ///
+  /// REFONTE — ce contrat devient aussi celui affiché sur l'accueil : on
+  /// le dépose dans `ContratSelectionExterne` (voir ce fichier pour le
+  /// pourquoi), l'accueil le lira à son prochain chargement et
+  /// affichera "ce contrat + les 2 plus proches en date" en haut de la
+  /// barre de recherche à la place de l'aperçu habituel.
   void _ouvrirFactures(ContratModel contrat) {
+    ContratSelectionExterne.enAttente = contrat;
     Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => ContratFacturesScreen(contrat: contrat)),
     );
@@ -187,82 +398,65 @@ class _ContractsScreenState extends State<ContractsScreen> {
     bool envoi = false;
     String? erreurLocale;
 
-    showModalBottomSheet(
+    AppBottomSheet.show(
       context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.white,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(AppRadius.sheet)),
-      ),
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setModalState) => Padding(
-          padding: EdgeInsets.only(
-            left: 20,
-            right: 20,
-            top: 20,
-            bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text('Ajouter un contrat', style: AppTextStyles.h3),
-              const SizedBox(height: 6),
-              const Text(
-                'Renseignez le numéro du contrat Eneo (visible sur votre '
-                'contrat papier ou communiqué par une agence Eneo).',
-                style: AppTextStyles.caption,
-              ),
-              const SizedBox(height: 14),
-              const Text('Numéro de contrat', style: AppTextStyles.label),
-              const SizedBox(height: 6),
-              TextField(
-                controller: numeroController,
-                decoration: const InputDecoration(hintText: 'ex: CTR-2026-000123'),
-              ),
-              if (erreurLocale != null) ...[
-                const SizedBox(height: 12),
-                Text(erreurLocale!, style: const TextStyle(color: AppColors.danger)),
-              ],
-              const SizedBox(height: 16),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: envoi
-                      ? null
-                      : () async {
-                          final numero = numeroController.text.trim();
-                          if (numero.isEmpty) {
-                            setModalState(() => erreurLocale = 'Le numéro de contrat est requis.');
-                            return;
-                          }
-                          setModalState(() {
-                            envoi = true;
-                            erreurLocale = null;
-                          });
-                          try {
-                            final nouveau = await _repo.createContrat(numeroContrat: numero);
-                            if (!mounted) return;
-                            Navigator.pop(ctx);
-                            setState(() => contrats = [...contrats, nouveau]);
-                            _showSnack('Contrat ${nouveau.numeroContrat} ajouté.');
-                          } on ApiValidationException catch (e) {
-                            setModalState(() {
-                              envoi = false;
-                              erreurLocale = e.firstMessage;
-                            });
-                          } on ApiException catch (e) {
-                            setModalState(() {
-                              envoi = false;
-                              erreurLocale = e.message;
-                            });
-                          }
-                        },
-                  child: Text(envoi ? 'Enregistrement…' : 'Ajouter ce contrat'),
-                ),
-              ),
+      title: 'Ajouter un contrat',
+      child: StatefulBuilder(
+        builder: (ctx, setModalState) => Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Renseignez le numéro du contrat Eneo (visible sur votre '
+              'contrat papier ou communiqué par une agence Eneo).',
+              style: AppTextStyles.caption,
+            ),
+            const SizedBox(height: 14),
+            AppTextField(
+              label: 'Numéro de contrat',
+              controller: numeroController,
+              hintText: 'ex: CTR-2026-000123',
+            ),
+            if (erreurLocale != null) ...[
+              const SizedBox(height: 12),
+              Text(erreurLocale!, style: const TextStyle(color: AppColors.danger)),
             ],
-          ),
+            const SizedBox(height: 16),
+            AppButton(
+              label: envoi ? 'Enregistrement…' : 'Ajouter ce contrat',
+              loading: envoi,
+              onPressed: envoi
+                  ? null
+                  : () async {
+                      final numero = numeroController.text.trim();
+                      if (numero.isEmpty) {
+                        setModalState(() => erreurLocale = 'Le numéro de contrat est requis.');
+                        return;
+                      }
+                      setModalState(() {
+                        envoi = true;
+                        erreurLocale = null;
+                      });
+                      try {
+                        final nouveau = await _repo.createContrat(numeroContrat: numero);
+                        if (!mounted) return;
+                        Navigator.pop(context);
+                        setState(() => contrats = [...contrats, nouveau]);
+                        _showSnack('Contrat ${nouveau.numeroContrat} ajouté.');
+                      } on ApiValidationException catch (e) {
+                        setModalState(() {
+                          envoi = false;
+                          erreurLocale = e.firstMessage;
+                        });
+                      } on ApiException catch (e) {
+                        setModalState(() {
+                          envoi = false;
+                          erreurLocale = e.message;
+                        });
+                      }
+                    },
+            ),
+          ],
         ),
       ),
     );
@@ -313,7 +507,7 @@ class _ContratTile extends StatelessWidget {
             ),
             StatusBadge(label: contrat.statutLabel),
             const SizedBox(width: 4),
-            const Icon(Icons.chevron_right, color: AppColors.textMuted),
+            const Icon(Icons.chevron_right, color: AppColors.background),
           ],
         ),
       ),
@@ -438,7 +632,6 @@ class _ContratDetailScreenState extends State<ContratDetailScreen> {
                       const SizedBox(height: 12),
                     ],
                     AppCard(
-                      color: AppColors.surface,
                       child: Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
@@ -549,16 +742,12 @@ class _ContratDetailScreenState extends State<ContratDetailScreen> {
   }
 
   void _revoquerDelegation(DelegationModel d) async {
-    final confirme = await showDialog<bool>(
+    final confirme = await AppDialog.confirm(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Révoquer cet accès ?'),
-        content: Text('${d.nomTiers} perdra immédiatement l’accès à tout le contrat.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Annuler')),
-          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Révoquer')),
-        ],
-      ),
+      title: 'Révoquer cet accès ?',
+      message: '${d.nomTiers} perdra immédiatement l’accès à tout le contrat.',
+      confirmLabel: 'Révoquer',
+      danger: true,
     );
     if (confirme != true) return;
     try {
@@ -581,137 +770,112 @@ class _ContratDetailScreenState extends State<ContratDetailScreen> {
     bool envoi = false;
     String? erreurLocale;
 
-    showModalBottomSheet(
+    AppBottomSheet.show(
       context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.white,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(AppRadius.sheet)),
-      ),
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setModalState) => Padding(
-          padding: EdgeInsets.only(
-            left: 20,
-            right: 20,
-            top: 20,
-            bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
-          ),
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('Ajouter un compteur — ${widget.contrat.numeroContrat}',
-                    style: AppTextStyles.h3),
-                const SizedBox(height: 6),
-                const Text(
-                  'Ce compteur sera rattaché à ce contrat. Renseignez son numéro '
-                  'et son adresse d’installation.',
-                  style: AppTextStyles.caption,
-                ),
-                const SizedBox(height: 14),
-                const Text('Numéro de compteur unique', style: AppTextStyles.label),
-                const SizedBox(height: 6),
-                TextField(
-                  controller: numeroController,
-                  decoration: const InputDecoration(hintText: 'ex: CM-2026-004821'),
-                ),
-                const SizedBox(height: 14),
-                const Text('Type', style: AppTextStyles.label),
-                const SizedBox(height: 6),
-                Row(
-                  children: [
-                    Expanded(
-                      child: RadioListTile<TypeCompteur>(
-                        contentPadding: EdgeInsets.zero,
-                        value: TypeCompteur.prepaye,
-                        groupValue: type,
-                        title: const Text('Prépayé'),
-                        onChanged: (v) => setModalState(() => type = v!),
-                      ),
+      title: 'Ajouter un compteur — ${widget.contrat.numeroContrat}',
+      child: StatefulBuilder(
+        builder: (ctx, setModalState) => SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Ce compteur sera rattaché à ce contrat. Renseignez son numéro '
+                'et son adresse d’installation.',
+                style: AppTextStyles.caption,
+              ),
+              const SizedBox(height: 14),
+              AppTextField(
+                label: 'Numéro de compteur unique',
+                controller: numeroController,
+                hintText: 'ex: CM-2026-004821',
+              ),
+              const SizedBox(height: 14),
+              const Text('Type', style: AppTextStyles.label),
+              const SizedBox(height: 6),
+              Row(
+                children: [
+                  Expanded(
+                    child: RadioListTile<TypeCompteur>(
+                      contentPadding: EdgeInsets.zero,
+                      value: TypeCompteur.prepaye,
+                      groupValue: type,
+                      title: const Text('Prépayé'),
+                      onChanged: (v) => setModalState(() => type = v!),
                     ),
-                    Expanded(
-                      child: RadioListTile<TypeCompteur>(
-                        contentPadding: EdgeInsets.zero,
-                        value: TypeCompteur.postpaye,
-                        groupValue: type,
-                        title: const Text('Postpayé'),
-                        onChanged: (v) => setModalState(() => type = v!),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                const Text('Adresse d’installation', style: AppTextStyles.label),
-                const SizedBox(height: 6),
-                TextField(
-                  controller: villeController,
-                  decoration: const InputDecoration(hintText: 'Ville'),
-                ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: communeController,
-                  decoration: const InputDecoration(hintText: 'Commune'),
-                ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: quartierController,
-                  decoration: const InputDecoration(hintText: 'Quartier'),
-                ),
-                if (erreurLocale != null) ...[
-                  const SizedBox(height: 12),
-                  Text(erreurLocale!, style: const TextStyle(color: AppColors.danger)),
-                ],
-                const SizedBox(height: 16),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton(
-                    onPressed: envoi
-                        ? null
-                        : () async {
-                            if (numeroController.text.trim().isEmpty ||
-                                villeController.text.trim().isEmpty) {
-                              setModalState(() => erreurLocale = 'Numéro et ville sont requis.');
-                              return;
-                            }
-                            setModalState(() {
-                              envoi = true;
-                              erreurLocale = null;
-                            });
-                            try {
-                              final nouveau = await _repo.rattacherCompteur(
-                                idContrat: _idContrat,
-                                numero: numeroController.text.trim(),
-                                typeApi: type == TypeCompteur.prepaye ? 'PREPAYE' : 'POSTPAYE',
-                                ville: villeController.text.trim(),
-                                commune: communeController.text.trim(),
-                                quartier: quartierController.text.trim(),
-                                proprietaireLegal: '',
-                              );
-                              if (!mounted) return;
-                              Navigator.pop(ctx);
-                              setState(() {
-                                compteurs = [...compteurs, nouveau];
-                                _modifie = true;
-                              });
-                              _showSnack('Compteur ${nouveau.numero} ajouté au contrat.');
-                            } on ApiValidationException catch (e) {
-                              setModalState(() {
-                                envoi = false;
-                                erreurLocale = e.firstMessage;
-                              });
-                            } on ApiException catch (e) {
-                              setModalState(() {
-                                envoi = false;
-                                erreurLocale = e.message;
-                              });
-                            }
-                          },
-                    child: Text(envoi ? 'Enregistrement…' : 'Ajouter ce compteur'),
                   ),
-                ),
+                  Expanded(
+                    child: RadioListTile<TypeCompteur>(
+                      contentPadding: EdgeInsets.zero,
+                      value: TypeCompteur.postpaye,
+                      groupValue: type,
+                      title: const Text('Postpayé'),
+                      onChanged: (v) => setModalState(() => type = v!),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              AppTextField(
+                label: 'Adresse d’installation',
+                controller: villeController,
+                hintText: 'Ville',
+              ),
+              const SizedBox(height: 8),
+              AppTextField(controller: communeController, hintText: 'Commune'),
+              const SizedBox(height: 8),
+              AppTextField(controller: quartierController, hintText: 'Quartier'),
+              if (erreurLocale != null) ...[
+                const SizedBox(height: 12),
+                Text(erreurLocale!, style: const TextStyle(color: AppColors.danger)),
               ],
-            ),
+              const SizedBox(height: 16),
+              AppButton(
+                label: envoi ? 'Enregistrement…' : 'Ajouter ce compteur',
+                loading: envoi,
+                onPressed: envoi
+                    ? null
+                    : () async {
+                        if (numeroController.text.trim().isEmpty ||
+                            villeController.text.trim().isEmpty) {
+                          setModalState(() => erreurLocale = 'Numéro et ville sont requis.');
+                          return;
+                        }
+                        setModalState(() {
+                          envoi = true;
+                          erreurLocale = null;
+                        });
+                        try {
+                          final nouveau = await _repo.rattacherCompteur(
+                            idContrat: _idContrat,
+                            numero: numeroController.text.trim(),
+                            typeApi: type == TypeCompteur.prepaye ? 'PREPAYE' : 'POSTPAYE',
+                            ville: villeController.text.trim(),
+                            commune: communeController.text.trim(),
+                            quartier: quartierController.text.trim(),
+                            proprietaireLegal: '',
+                          );
+                          if (!mounted) return;
+                          Navigator.pop(context);
+                          setState(() {
+                            compteurs = [...compteurs, nouveau];
+                            _modifie = true;
+                          });
+                          _showSnack('Compteur ${nouveau.numero} ajouté au contrat.');
+                        } on ApiValidationException catch (e) {
+                          setModalState(() {
+                            envoi = false;
+                            erreurLocale = e.firstMessage;
+                          });
+                        } on ApiException catch (e) {
+                          setModalState(() {
+                            envoi = false;
+                            erreurLocale = e.message;
+                          });
+                        }
+                      },
+              ),
+            ],
           ),
         ),
       ),
@@ -732,7 +896,7 @@ class _ContratDetailScreenState extends State<ContratDetailScreen> {
 
     showModalBottomSheet(
       context: context,
-      backgroundColor: Colors.white,
+      backgroundColor: AppColors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(AppRadius.sheet)),
       ),
@@ -843,11 +1007,7 @@ class _ContratDetailScreenState extends State<ContratDetailScreen> {
                       ElevatedButton(
                         onPressed: rechercheEnCours ? null : rechercher,
                         child: rechercheEnCours
-                            ? const SizedBox(
-                                width: 18,
-                                height: 18,
-                                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                              )
+                            ? const AppLoader.small(color: AppColors.white)
                             : const Text('Rechercher'),
                       ),
                   ],

@@ -15,9 +15,16 @@ from datetime import timedelta
 import base64
 import hashlib
 import os
+from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Charge les variables du fichier .env (placé à côté de manage.py) dans
+# os.environ AVANT tous les os.environ.get(...) ci-dessous. Sans cet appel,
+# le .env est ignoré et toutes les valeurs par défaut (souvent None) sont
+# utilisées à la place.
+load_dotenv(BASE_DIR / ".env")
 
 
 # Quick-start development settings - unsuitable for production
@@ -31,6 +38,100 @@ DEBUG = True
 
 ALLOWED_HOSTS = ['192.168.1.230', 'localhost', '127.0.0.1']
 MOBILE_MONEY_WEBHOOK_SECRET = os.environ.get("MOBILE_MONEY_WEBHOOK_SECRET")
+
+# ==============================================================================
+# NOTCHPAY — Agrégateur Mobile Money (module 5 — api/services/notchpay.py)
+# ==============================================================================
+# Clés de l'espace SANDBOX NotchPay (préfixe pk_test./sk_test./hsk_test.).
+# Elles sont lues depuis l'environnement en priorité ; la valeur en dur
+# ci-dessous n'est qu'un secours pour ne pas casser l'environnement de dev
+# tant qu'aucune variable n'est positionnée — exactement le même principe
+# que TOKEN_ENCRYPTION_KEY plus haut. Le jour où vous basculez sur des clés
+# pk_live/sk_live, définissez les variables d'environnement correspondantes
+# ET repassez NOTCHPAY_SANDBOX_FORCER_MONTANT_ZERO à False (voir plus bas) :
+# ne JAMAIS déployer ce fichier tel quel en production avec des clés live.
+NOTCHPAY_PUBLIC_KEY = os.environ.get(
+    "NOTCHPAY_PUBLIC_KEY",
+    "pk_test.YAdNJkDataeoPbYE07cl88AY4zczo0Cal1U8KvAEH0FXSsIyMCJyzloa2lHbNlDmyK5tYsIAKW5c4SRs8LnjkAPk1xKs2nOTixNQggEVsK1WiLgNjUJb8bvBXQvcv",
+)
+NOTCHPAY_PRIVATE_KEY = os.environ.get(
+    "NOTCHPAY_PRIVATE_KEY",
+    "sk_test.X95cWc0WqJFblt0uWkFTCzB19jh4epVpZviOApWzUEedreDRGyUsMTHxf8Rq2wXGEC8DQqxSp7T8CkeCVWlTl2tRytk7JOfEExnUTXlixlDYgeWNqMgvIwoUoGF8k",
+)
+# Clé de hachage NotchPay ("Hash Key") : sert à vérifier la signature
+# HMAC-SHA256 (en-tête `x-notchpay-signature`) des webhooks entrants, pour
+# s'assurer qu'une notification de paiement provient bien de NotchPay et non
+# d'un tiers qui en imiterait la forme (CDC 9.2, RG-08/RG-09).
+NOTCHPAY_HASH_KEY = os.environ.get(
+    "NOTCHPAY_HASH_KEY",
+    "hsk_test.VuOO9EKk5l89CYaQ9K07SPcBFSIpxiFkT5cdUO4pgiZ7nlhF9oCKfpeZ4XaBamqdN52iB9ZtBcHhTKIY0iKbgEEmIfmOKVfsGSmCF0QGRe0bn359SP4yQCjzNuAnD",
+)
+NOTCHPAY_BASE_URL = os.environ.get("NOTCHPAY_BASE_URL", "https://api.notchpay.co")
+
+# URL de terminaison (callback/webhook) exposée à NotchPay. En dev, elle
+# transite par le tunnel ngrok (celui-ci change d'adresse à chaque relance
+# de `ngrok http`, sauf domaine réservé) — pensez à la mettre à jour dans
+# votre .env local si l'URL ngrok change, plutôt que de modifier ce fichier.
+NOTCHPAY_CALLBACK_URL = os.environ.get(
+    "NOTCHPAY_CALLBACK_URL",
+    "https://munchkin-native-distant.ngrok-free.app/api/webhooks/notchpay/",
+)
+
+# ⚠️ MODE SANDBOX DE TEST — cf. api/services/notchpay.py::initialiser_paiement.
+# Quand ce flag est actif, le montant RÉELLEMENT envoyé à l'API NotchPay est
+# systématiquement forcé à 0 FCFA, quel que soit le montant métier saisi par
+# l'utilisateur (500, 12 000, ...). Cela permet de dérouler tout le parcours
+# (push USSD, webhook, génération de jeton) en sandbox sans dépendre d'un
+# solde de test suffisant chez l'opérateur Mobile Money. Le montant métier
+# réel reste, lui, celui enregistré dans `Paiements.montant_fcfa` — seule la
+# valeur transmise à l'agrégateur est modifiée.
+# Par défaut : actif seulement si des clés `_test.` sont détectées, pour
+# qu'un déploiement avec des clés live désactive automatiquement le
+# comportement même en cas d'oubli. Vous pouvez aussi le piloter
+# explicitement via la variable d'environnement NOTCHPAY_SANDBOX_ZERO_FCFA.
+NOTCHPAY_SANDBOX_FORCER_MONTANT_ZERO = os.environ.get(
+    "NOTCHPAY_SANDBOX_ZERO_FCFA",
+    "true" if "_test." in NOTCHPAY_PUBLIC_KEY else "false",
+).lower() in ("1", "true", "yes")
+
+
+# ==============================================================================
+# ORANGE SMS API — envoi des OTP et notifications critiques par SMS (CDC 10)
+# ==============================================================================
+# `ORANGE_SMS_CLIENT_ID` peut avoir une valeur de secours en dev (ce n'est
+# pas un secret à proprement parler côté OAuth2 client_credentials, mais on
+# évite tout de même de le committer en dur sur le long terme). En revanche
+# `ORANGE_SMS_CLIENT_SECRET` n'a AUCUNE valeur de secours : sans variable
+# d'environnement positionnée, l'envoi de SMS échoue explicitement plutôt que
+# de tenter un appel avec un secret manquant ou deviné.
+ORANGE_SMS_CLIENT_ID = os.environ.get("ORANGE_SMS_CLIENT_ID", "oAfa3Cx5eMLLshSnMeR0CqFqFQFxqa3D")
+ORANGE_SMS_CLIENT_SECRET = os.environ.get("ORANGE_SMS_CLIENT_SECRET")
+# Numéro expéditeur (senderAddress) exigé par l'API Orange SMS, format
+# `tel:+237XXXXXXXXX` — à renseigner via l'environnement selon le contrat
+# Orange souscrit (aucune valeur fictive fournie ici : un mauvais expéditeur
+# ferait échouer silencieusement l'envoi côté opérateur).
+ORANGE_SMS_SENDER_ADDRESS = os.environ.get("ORANGE_SMS_SENDER_ADDRESS")
+
+
+# ==============================================================================
+# SMTP — envoi des e-mails (mot de passe oublié, reçus, notifications
+# "Informatif", CDC 10). Aucune valeur de secours : sans configuration, on
+# retombe sur la console (utile en dev, jamais en prod) plutôt que d'échouer
+# silencieusement ou de deviner un serveur SMTP.
+# ==============================================================================
+if os.environ.get("EMAIL_HOST"):
+    EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
+    EMAIL_HOST = os.environ.get("EMAIL_HOST")
+    EMAIL_PORT = int(os.environ.get("EMAIL_PORT", "587"))
+    EMAIL_USE_TLS = os.environ.get("EMAIL_USE_TLS", "true").lower() in ("1", "true", "yes")
+    EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER")
+    EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD")
+    DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", EMAIL_HOST_USER)
+else:
+    # Aucune variable EMAIL_HOST définie : les e-mails sont simplement
+    # affichés dans la console du serveur de dev plutôt qu'envoyés — à
+    # remplacer par les identifiants SMTP réels via l'environnement.
+    EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
 
 # Clé de chiffrement applicatif AES-256-GCM du jeton STS (api/crypto.py,
 # point 1 de l'audit du 24/07/2026 — remplace le stockage en clair de

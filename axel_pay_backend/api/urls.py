@@ -62,6 +62,7 @@ from .views import (
     # Module 5 — Paiements & agrégateurs Mobile Money
     InitierPaiementView,
     WebhookPaiementView,
+    NotchPayWebhookView,
     PaiementStatutView,
     ReconciliationComptableView,
     RemboursementView,
@@ -162,6 +163,9 @@ urlpatterns = [
     # ==========================================================================
     path("paiements/initier/", InitierPaiementView.as_view(), name="paiement-initier"),
     path("paiements/webhook/", WebhookPaiementView.as_view(), name="paiement-webhook"),
+    # Point de terminaison dédié NotchPay (cf. api_pour_axelblez.txt) — à
+    # renseigner tel quel dans le dashboard NotchPay : /api/webhooks/notchpay/
+    path("webhooks/notchpay/", NotchPayWebhookView.as_view(), name="notchpay-webhook"),
     path("paiements/<str:id_paiement>/", PaiementStatutView.as_view(), name="paiement-statut"),
     path("paiements/<str:id_paiement>/rembourser/", RemboursementView.as_view(), name="paiement-remboursement"),
     path("paiements/reconciliation/", ReconciliationComptableView.as_view(), name="paiement-reconciliation"),

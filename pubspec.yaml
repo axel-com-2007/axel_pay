@@ -22,6 +22,15 @@ dependencies:
   lottie: ^3.1.0
   sqflite_sqlcipher: ^3.1.0
   connectivity_plus: ^6.0.0
+  flutter_map: ^8.0.0
+  latlong2: ^0.9.1
+   # Position GPS de l'utilisateur
+  geolocator: ^14.0.2
+
+  # Demande des permissions (Android/iOS)
+  permission_handler: ^12.0.1
+  url_launcher: ^6.3.2
+  flutter_map_animations: ^0.9.0
 
 dev_dependencies:
   flutter_test:
@@ -32,8 +41,7 @@ flutter:
   uses-material-design: true
 
   assets:
-    # Animations Lottie fournies dans assets/animations/ (8 fichiers
-    # .json, voir lib/widgets/animations/animations.dart::LottieAssets).
+   
     - assets/animations/
-    # Décommentez et ajoutez vos propres visuels dans assets/images si besoin
-    # - assets/images/
+    
+    - assets/images/

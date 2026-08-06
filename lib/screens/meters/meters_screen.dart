@@ -29,6 +29,8 @@ import '../../widgets/animations/animations.dart';
 import '../../widgets/app_card.dart';
 import '../../widgets/offline_banner.dart';
 import '../../widgets/status_badge.dart';
+import '../../shared/widgets/app_dialog.dart';
+import '../../shared/widgets/app_loader.dart';
 
 class MetersScreen extends StatefulWidget {
   const MetersScreen({super.key});
@@ -229,16 +231,12 @@ class _MetersScreenState extends State<MetersScreen> {
   }
 
   void _revoquer(DelegationModel d) async {
-    final confirme = await showDialog<bool>(
+    final confirme = await AppDialog.confirm(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Révoquer cet accès ?'),
-        content: Text('${d.nomTiers} perdra immédiatement l’accès à ce compteur.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Annuler')),
-          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Révoquer')),
-        ],
-      ),
+      title: 'Révoquer cet accès ?',
+      message: '${d.nomTiers} perdra immédiatement l’accès à ce compteur.',
+      confirmLabel: 'Révoquer',
+      danger: true,
     );
     if (confirme != true) return;
     try {
@@ -266,7 +264,7 @@ class _MetersScreenState extends State<MetersScreen> {
 
     showModalBottomSheet(
       context: context,
-      backgroundColor: Colors.white,
+      backgroundColor: AppColors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(AppRadius.sheet)),
       ),
@@ -369,11 +367,7 @@ class _MetersScreenState extends State<MetersScreen> {
                       ElevatedButton(
                         onPressed: rechercheEnCours ? null : rechercher,
                         child: rechercheEnCours
-                            ? const SizedBox(
-                                width: 18,
-                                height: 18,
-                                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                              )
+                            ? const AppLoader.small(color: AppColors.white)
                             : const Text('Rechercher'),
                       ),
                   ],

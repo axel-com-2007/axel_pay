@@ -23,6 +23,7 @@ import '../../api/api_exception.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/animations/animations.dart';
 import '../../widgets/primary_button.dart';
+import '../../shared/widgets/app_text_field.dart';
 import 'register_screen.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -144,24 +145,11 @@ class _LoginScreenState extends State<LoginScreen> {
                             const SizedBox(height: 30),
 
                             // ===== Identifiant =====
-                            const Align(
-                              alignment: Alignment.centerLeft,
-                              child: Text('Adresse e-mail ou numéro de téléphone :',
-                                  style: AppTextStyles.label),
-                            ),
-                            const SizedBox(height: 10),
-                            TextFormField(
+                            AppTextField(
+                              label: 'Adresse e-mail ou numéro de téléphone :',
                               controller: identifiantController,
                               keyboardType: TextInputType.emailAddress,
-                              decoration: InputDecoration(
-                                hintText: 'ex: axel.mai@example.com',
-                                fillColor: const Color(0xFFF4F6F5),
-                                filled: true,
-                                border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(AppRadius.field),
-                                  borderSide: BorderSide.none,
-                                ),
-                              ),
+                              hintText: 'ex: axel.mai@example.com',
                               validator: (value) {
                                 if (value == null || value.trim().isEmpty) {
                                   return 'Ce champ est obligatoire';
@@ -172,30 +160,18 @@ class _LoginScreenState extends State<LoginScreen> {
                             const SizedBox(height: 22),
 
                             // ===== Mot de passe =====
-                            const Align(
-                              alignment: Alignment.centerLeft,
-                              child: Text('Mot de passe', style: AppTextStyles.label),
-                            ),
-                            const SizedBox(height: 10),
-                            TextFormField(
+                            AppTextField(
+                              label: 'Mot de passe',
                               controller: passwordController,
                               obscureText: obscurePassword,
-                              decoration: InputDecoration(
-                                hintText: 'Entrez votre mot de passe',
-                                fillColor: const Color(0xFFF4F6F5),
-                                filled: true,
-                                border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(AppRadius.field),
-                                  borderSide: BorderSide.none,
+                              hintText: 'Entrez votre mot de passe',
+                              suffixIcon: IconButton(
+                                icon: Icon(
+                                  obscurePassword ? Icons.visibility_off : Icons.visibility,
+                                  color: Colors.black45,
                                 ),
-                                suffixIcon: IconButton(
-                                  icon: Icon(
-                                    obscurePassword ? Icons.visibility_off : Icons.visibility,
-                                    color: Colors.black45,
-                                  ),
-                                  onPressed: () =>
-                                      setState(() => obscurePassword = !obscurePassword),
-                                ),
+                                onPressed: () =>
+                                    setState(() => obscurePassword = !obscurePassword),
                               ),
                               validator: (value) {
                                 if (value == null || value.isEmpty) {

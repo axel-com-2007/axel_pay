@@ -30,6 +30,9 @@ import '../../theme/app_theme.dart';
 import '../../widgets/animations/animations.dart';
 import '../../widgets/app_card.dart';
 import '../../widgets/status_badge.dart';
+import '../../shared/widgets/app_bottom_sheet.dart';
+import '../../shared/widgets/app_text_field.dart';
+import '../../design_system/buttons/app_button.dart';
 import '../payment/payment_screen.dart';
 import 'contracts_screen.dart';
 
@@ -282,58 +285,37 @@ class _ContratFacturesScreenState extends State<ContratFacturesScreen> {
   }
 
   void _signalerAnomalie(FactureModel facture) {
-    showModalBottomSheet(
+    final controller = TextEditingController();
+    AppBottomSheet.show(
       context: context,
-      backgroundColor: Colors.white,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(AppRadius.sheet)),
+      title: 'Signaler une anomalie — ${facture.moisFacturation}',
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          AppTextField(
+            controller: controller,
+            maxLines: 3,
+            hintText: 'Décrivez le problème rencontré (montant incorrect, index erroné...)',
+          ),
+          const SizedBox(height: 16),
+          AppButton(
+            label: 'Envoyer au support',
+            onPressed: () async {
+              final description = controller.text.trim();
+              Navigator.pop(context);
+              try {
+                await _repo.signalerAnomalie(facture.id, description);
+                if (!mounted) return;
+                _showSnack('Signalement transmis au support technique');
+              } on ApiException catch (e) {
+                if (!mounted) return;
+                _showSnack(e.message);
+              }
+            },
+          ),
+        ],
       ),
-      builder: (ctx) {
-        final controller = TextEditingController();
-        return Padding(
-          padding: EdgeInsets.only(
-            left: 20,
-            right: 20,
-            top: 20,
-            bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('Signaler une anomalie — ${facture.moisFacturation}',
-                  style: AppTextStyles.h3),
-              const SizedBox(height: 12),
-              TextField(
-                controller: controller,
-                maxLines: 3,
-                decoration: const InputDecoration(
-                  hintText: 'Décrivez le problème rencontré (montant incorrect, index erroné...)',
-                ),
-              ),
-              const SizedBox(height: 16),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: () async {
-                    final description = controller.text.trim();
-                    Navigator.pop(ctx);
-                    try {
-                      await _repo.signalerAnomalie(facture.id, description);
-                      if (!mounted) return;
-                      _showSnack('Signalement transmis au support technique');
-                    } on ApiException catch (e) {
-                      if (!mounted) return;
-                      _showSnack(e.message);
-                    }
-                  },
-                  child: const Text('Envoyer au support'),
-                ),
-              ),
-            ],
-          ),
-        );
-      },
     );
   }
 
