@@ -70,6 +70,7 @@ from .pagination import StandardResultsSetPagination
 from .services import notchpay
 from .services.notchpay import NotchPayError
 from .services.orange_sms import OrangeSmsError, envoyer_sms
+from .services import ai_support
 from .models import (
     Adresses,
     AuditLogs,
@@ -2524,6 +2525,98 @@ class ExportDataView(APIView):
         return Response(export)
 
 
+class DeviceRegisterView(generics.CreateAPIView):
+    """
+    Enregistrement (UPSERT) d'un terminal et de son jeton FCM (CDC 10,
+    table `UserDevices`), nécessaire aux notifications push.
+
+    POST /api/devices/
+        {"fcm_token": "xxxxxxxx", "type_appareil": "android"}
+
+    Comportement :
+      - token inconnu           → création d'une nouvelle ligne.
+      - token déjà enregistré,
+        même utilisateur        → mise à jour (type_appareil, statut
+                                   remis à "Actif", date_derniere_activite).
+      - token déjà enregistré,
+        AUTRE utilisateur       → réassignation à `request.user` (cas du
+                                   terminal partagé entre plusieurs comptes).
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = UserDevicesSerializer
+
+    def create(self, request, *args, **kwargs):
+        fcm_token = request.data.get("fcm_token")
+        if not fcm_token:
+            return Response(
+                {"fcm_token": "Ce champ est requis."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        type_appareil = request.data.get("type_appareil", "android")
+        now = timezone.now()
+
+        device, created = UserDevices.objects.update_or_create(
+            fcm_token=fcm_token,
+            defaults={
+                "id_user": request.user,
+                "type_appareil": type_appareil,
+                "statut": "Actif",
+                "date_derniere_activite": now,
+            },
+        )
+        if created:
+            device.date_enregistrement = now
+            device.save(update_fields=["date_enregistrement"])
+
+        serializer = self.get_serializer(device)
+        return Response(
+            serializer.data,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+
+class DeviceUnregisterView(APIView):
+    """
+    Désenregistrement d'un terminal PAR ID (déconnexion, désinstallation,
+    ou action back-office) — inchangée par rapport à l'existant.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, id_device):
+        device = get_object_or_404(UserDevices, pk=id_device, id_user=request.user)
+        device.statut = "Inactif"
+        device.save(update_fields=["statut"])
+        return Response({"detail": "Terminal désenregistré."})
+
+
+class DeviceUnregisterByTokenView(APIView):
+    """
+    Désenregistrement d'un terminal PAR TOKEN — utilisée par le client
+    Flutter, qui ne connaît que son propre `fcm_token`, jamais `id_device`.
+
+    DELETE /api/devices/desenregistrer/
+        {"fcm_token": "xxxxxxxx"}
+
+    Sécurité : le filtre `id_user=request.user` garantit qu'un utilisateur
+    ne peut désactiver QUE ses propres terminaux.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request):
+        fcm_token = request.data.get("fcm_token")
+        if not fcm_token:
+            return Response(
+                {"fcm_token": "Ce champ est requis."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        device = get_object_or_404(UserDevices, fcm_token=fcm_token, id_user=request.user)
+        device.statut = "Inactif"
+        device.save(update_fields=["statut"])
+        return Response({"detail": "Terminal désenregistré."})    
+
+
 class DeleteAccountView(APIView):
     """
     Suppression / désactivation de compte à l'initiative du client (CDC 5.5,
@@ -2560,3 +2653,121 @@ class DeleteAccountView(APIView):
             request=request,
         )
         return Response({"detail": "Compte désactivé. Historique financier conservé (obligations légales)."})
+
+
+# ==============================================================================
+# MODULE 10 — ASSISTANT DE SUPPORT IA (écran "Assistance")
+# ==============================================================================
+# Chatbot de premier niveau, branché sur l'écran "Écrire un message" de
+# `support_screen.dart` (jusqu'ici un stub honnête "Chat en direct — bientôt
+# disponible"). Répond aux questions de facturation/recharge/litiges en
+# s'appuyant sur le dossier RÉEL du client connecté plutôt qu'une FAQ
+# statique — cf. `_construire_contexte_support` ci-dessous.
+#
+# Pas de nouvelle table de conversation : l'historique est tenu côté
+# CLIENT, qui renvoie la liste complète des tours à chaque appel (pattern
+# "stateless" standard de l'API Messages, cf. la doc d'intégration
+# Anthropic dans les Artifacts). Ça évite une migration DB pour ce premier
+# jet, au prix de re-transmettre l'historique à chaque tour — acceptable
+# pour une conversation de support, généralement courte.
+#
+# ⚠️ TODO INTEGRATION : nécessite `ANTHROPIC_API_KEY` dans l'environnement
+# (.env, settings.py). Sans clé configurée, la vue renvoie une erreur 503
+# explicite (cf. `AiSupportError`) plutôt qu'une fausse réponse simulée.
+# ==============================================================================
+ 
+def _construire_contexte_support(user):
+    """
+    Résumé factuel et concis du dossier du client connecté, injecté dans le
+    prompt système de l'assistant IA (`ai_support._construire_prompt_systeme`)
+    pour qu'il réponde sur SA situation réelle plutôt que des généralités.
+ 
+    Volontairement minimal et jamais sensible : ni mot de passe, ni jeton
+    de recharge, ni numéro Mobile Money, ni email. Limité aux 5 contrats et
+    5 litiges les plus récents — un dossier support n'a pas besoin de tout
+    l'historique pour être utile, et ça borne la taille du prompt système.
+    """
+    contrats = list(Contrats.objects.filter(id_user=user).order_by("-date_creation")[:5])
+    ids_compteurs = get_delegated_compteur_ids(user)
+ 
+    factures_impayees = FacturesPostpayees.objects.filter(
+        id_compteur_id__in=ids_compteurs, statut="Impayée",
+    )
+    total_impaye = factures_impayees.aggregate(total=Sum("montant_fcfa"))["total"] or 0
+ 
+    litiges_ouverts = (
+        Litiges.objects.filter(id_user=user)
+        .exclude(statut="Résolu")
+        .order_by("-date_ouverture")[:5]
+    )
+ 
+    return {
+        "prenom": user.prenom,
+        "contrats": [{"numero": c.numero_contrat, "statut": c.statut} for c in contrats],
+        "nombre_factures_impayees": factures_impayees.count(),
+        "total_impaye_fcfa": float(total_impaye),
+        "litiges_ouverts": [
+            {
+                "id": l.id_litige,
+                "niveau": l.niveau,
+                "statut": l.statut,
+                "description": (l.description or "")[:200],
+            }
+            for l in litiges_ouverts
+        ],
+    }
+ 
+ 
+class SupportChatView(APIView):
+    """
+    POST /api/support/chat/
+        {"messages": [{"role": "user", "content": "..."}, ...]}
+ 
+    - Le CLIENT tient l'historique complet et le renvoie à chaque appel
+      (pas de conversation_id, pas d'état côté serveur) ; cette vue ne fait
+      que rejouer cet historique à l'API Anthropic avec le contexte métier
+      du client en prompt système.
+    - Rejette un historique vide ou dont le dernier message n'est pas de
+      l'utilisateur (protège contre un client mal formé qui rejouerait la
+      réponse de l'IA comme nouveau tour, doublant l'appel pour rien).
+    - Garde-fous anti-abus grossiers : 20 tours maximum par requête, dernier
+      message limité à 2000 caractères (l'API Anthropic a ses propres
+      limites, mais on évite de lui transmettre un payload démesuré).
+    - N'écrit JAMAIS dans `Litiges`/`Paiements` : si l'IA juge la situation
+      hors de sa portée, elle le signale (`escalade_recommandee`) et c'est
+      ensuite au CLIENT de décider, depuis l'écran Assistance, d'appeler un
+      agent ou d'ouvrir un litige via les vues dédiées — cette vue informe,
+      elle n'agit jamais à la place de l'utilisateur.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+ 
+    MAX_TOURS = 20
+    MAX_LONGUEUR_MESSAGE = 2000
+ 
+    def post(self, request):
+        messages = request.data.get("messages")
+        if not messages or not isinstance(messages, list):
+            raise ValidationError({"messages": "Requis : liste non vide de {role, content}."})
+        if len(messages) > self.MAX_TOURS:
+            raise ValidationError({"messages": f"Maximum {self.MAX_TOURS} tours par requête."})
+ 
+        dernier = messages[-1] if isinstance(messages[-1], dict) else {}
+        if dernier.get("role") != "user":
+            raise ValidationError({"messages": "Le dernier message doit être celui de l'utilisateur."})
+        if len(dernier.get("content") or "") > self.MAX_LONGUEUR_MESSAGE:
+            raise ValidationError({
+                "messages": f"Message limité à {self.MAX_LONGUEUR_MESSAGE} caractères."
+            })
+ 
+        contexte = _construire_contexte_support(request.user)
+ 
+        try:
+            reponse, escalade = ai_support.repondre(messages, contexte)
+        except ai_support.AiSupportError as exc:
+            logger.error("Échec de l'assistant IA support (user=%s) : %s", request.user.pk, exc)
+            return Response(
+                {"detail": "L'assistant est momentanément indisponible. Réessayez, ou appelez un agent support."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+ 
+        return Response({"reponse": reponse, "escalade_recommandee": escalade})    

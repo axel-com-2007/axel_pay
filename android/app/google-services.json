@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1015827732789",
+    "project_id": "axelpay",
+    "storage_bucket": "axelpay.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1015827732789:android:a67106bcc7267def82947c",
+        "android_client_info": {
+          "package_name": "com.example.axel_pay"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAhe4MFsRCkV_9VD1aPV4WsWBbKA9Okc84"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

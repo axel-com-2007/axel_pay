@@ -19,7 +19,7 @@ class ApiConfig {
       case ApiEnvironment.dev:
         // Backend Django lancé en local (`python manage.py runserver 0.0.0.0:8000`)
         return  'http://localhost:8000/api';
-        // 'http://192.168.1.230:8000/api' à remettre après les tests
+        // 'http://localhost:8000/api'; 'http://192.168.1.230:8000/api' à remettre après les tests
       case ApiEnvironment.staging:
         return 'https://staging.eneo-app.example.com/api';
       case ApiEnvironment.prod:

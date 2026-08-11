@@ -58,6 +58,15 @@ import 'local_cache.dart';
 /// réseau réussie qui l'a produite. Les écrans (dashboard, prépayé...)
 /// utilisent [isFromCache] pour afficher un bandeau "hors connexion" et
 /// [syncedAt] pour le "Dernière mise à jour : il y a Xh".
+/// Une page de `GET /notifications/` : les notifications de cette page,
+/// plus le lien `next` DRF (`null` s'il n'y a pas de page suivante) à
+/// repasser à [EneoRepository.getNotifications] pour charger la suite.
+class NotificationsPage {
+  final List<NotificationModel> notifications;
+  final String? next;
+  const NotificationsPage({required this.notifications, this.next});
+}
+
 class CachedResult<T> {
   final T data;
   final bool isFromCache;
@@ -184,17 +193,26 @@ class EneoRepository {
   /// Libellé "Quartier — Ville" par id_adresse, construit à partir de
   /// `GET /adresses/` (le seul endpoint qui expose ce texte).
   Future<Map<int, String>> _adresseLabels() async {
+    final data = await _adresseData();
+    return data.labels;
+  }
+
+  /// Résout toutes les adresses depuis `GET /adresses/`.
+  /// Retourne labels (texte complet) ET villes (ville seule) en un seul appel.
+  Future<({Map<int, String> labels, Map<int, String> villes})> _adresseData() async {
     final raw = asList(await _api.listAdresses());
-    final map = <int, String>{};
+    final labels = <int, String>{};
+    final villes = <int, String>{};
     for (final a in raw) {
       final id = a['id_adresse'] as int? ?? int.tryParse('${a['id_adresse']}');
       if (id == null) continue;
       final quartier = (a['quartier_description'] as String? ?? '').trim();
       final commune = (a['commune'] as String? ?? '').trim();
       final ville = (a['ville'] as String? ?? '').trim();
-      map[id] = [quartier, commune, ville].where((s) => s.isNotEmpty).join(', ');
+      labels[id] = [quartier, commune, ville].where((s) => s.isNotEmpty).join(', ');
+      villes[id] = ville;
     }
-    return map;
+    return (labels: labels, villes: villes);
   }
 
   /// Prix du kWh actuellement en vigueur pour un type de compteur donné
@@ -375,17 +393,18 @@ class EneoRepository {
       key: 'compteurs_contrat_$idContrat',
       fetch: () async {
         final rawCompteurs = asList(await _api.listContratCompteurs(idContrat));
-        final adresses = await _adresseLabels();
+        final adresseData = await _adresseData();
 
         final compteurs = rawCompteurs.map((json) {
           final idAdresse = json['id_adresse'] is int
               ? json['id_adresse'] as int
               : int.tryParse('${json['id_adresse']}');
-          return CompteurModel.fromJson(
+          final c = CompteurModel.fromJson(
             json as Map<String, dynamic>,
-            adresseLabel: adresses[idAdresse],
+            adresseLabel: adresseData.labels[idAdresse],
             numeroContrat: numeroContrat,
           );
+          return c.copyWith(ville: adresseData.villes[idAdresse]);
         }).toList();
 
         return _enrichirTous(compteurs);
@@ -453,7 +472,7 @@ class EneoRepository {
       key: 'compteurs_tous',
       fetch: () async {
         final rawCompteurs = asList(await _api.listCompteurs());
-        final adresses = await _adresseLabels();
+        final adresseData = await _adresseData();
         final contrats = await _numerosContrats();
 
         final compteurs = rawCompteurs.map((json) {
@@ -464,11 +483,12 @@ class EneoRepository {
           final idContrat = m['id_contrat'] is int
               ? m['id_contrat'] as int
               : int.tryParse('${m['id_contrat']}');
-          return CompteurModel.fromJson(
+          final c = CompteurModel.fromJson(
             m,
-            adresseLabel: adresses[idAdresse],
+            adresseLabel: adresseData.labels[idAdresse],
             numeroContrat: idContrat != null ? contrats[idContrat] : null,
           );
+          return c.copyWith(ville: adresseData.villes[idAdresse]);
         }).toList();
 
         return _enrichirTous(compteurs);
@@ -634,6 +654,33 @@ class EneoRepository {
     );
   }
 
+  /// Une page de `GET /notifications/` (append-only côté SQL, donc
+  /// délibérément PAS chargée en une seule fois — cf. commentaire de
+  /// `StandardResultsSetPagination` dans `api/pagination.py`). [pageUrl]
+  /// est le lien `next` de la page précédente ; `null` pour la première
+  /// page. Pas de cache local (contrairement à `getFactures`/
+  /// `getTransactions`) : l'historique de notifications n'a pas de valeur
+  /// hors-ligne documentée dans le CDC, donc pas de repli silencieux —
+  /// l'écran affiche une erreur explicite plutôt qu'une liste vide
+  /// trompeuse en cas de coupure réseau.
+  Future<NotificationsPage> getNotifications({String? pageUrl}) async {
+    final json = pageUrl != null
+        ? await _api.listNotificationsPage(pageUrl)
+        : await _api.listNotifications();
+    final notifications =
+        asList(json).cast<Map<String, dynamic>>().map(NotificationModel.fromJson).toList();
+    final next = (json is Map<String, dynamic>) ? json['next'] as String? : null;
+    return NotificationsPage(notifications: notifications, next: next);
+  }
+
+  /// Un tour de l'assistant de support IA (écran Assistance). [messages]
+  /// est l'historique complet à renvoyer à chaque appel (le serveur ne
+  /// garde aucun état, cf. `SupportChatView` côté backend). Pas de cache :
+  /// chaque tour est un appel réseau direct.
+  Future<Map<String, dynamic>> supportChat(List<Map<String, String>> messages) {
+    return _api.supportChat(messages);
+  }
+
   /// Délégations actives accordées par l'utilisateur courant, sur un
   /// compteur précis ou sur tout un contrat (REFONTE v1.5), tous compteurs
   /// confondus (cf. limite (5) : nom/téléphone du tiers non résolvables
@@ -721,14 +768,15 @@ class EneoRepository {
       'proprietaire_legal': proprietaireLegal,
     });
 
-    final adresses = await _adresseLabels();
+    final adresseData = await _adresseData();
     final contrats = await _numerosContrats();
     final idAdresseInt = idAdresse is int ? idAdresse : int.tryParse('$idAdresse');
-    return CompteurModel.fromJson(
+    final c = CompteurModel.fromJson(
       compteur,
-      adresseLabel: adresses[idAdresseInt],
+      adresseLabel: adresseData.labels[idAdresseInt],
       numeroContrat: contrats[idContrat],
     );
+    return c.copyWith(ville: adresseData.villes[idAdresseInt]);
   }
 
   Future<Map<String, dynamic>> initierPaiement({

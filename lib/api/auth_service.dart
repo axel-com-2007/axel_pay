@@ -4,10 +4,12 @@ import 'package:flutter/foundation.dart';
 
 import 'api_client.dart';
 import 'api_exception.dart';
+import 'device_token_api.dart';
 import 'eneo_api_service.dart';
 import 'token_storage.dart';
 import 'models/user_model.dart';
 import '../data/local_cache.dart';
+import '../services/firebase_messaging_service.dart';
 
 /// État d'authentification exposé à l'UI.
 ///
@@ -20,37 +22,12 @@ enum AuthStatus { unknown, authenticated, unauthenticated }
 /// Service d'authentification — couche métier au-dessus d'[EneoApiService]
 /// dédiée au Module 1 (`auth/*`, `profile/*`) de `urls.py`.
 ///
-/// Contrairement à [EneoApiService] (façade brute, une méthode par endpoint,
-/// qui renvoie du JSON non typé), ce service :
-///  - garde l'état de session en mémoire (`status`, `currentUser`) et notifie
-///    l'UI (`ChangeNotifier`) à chaque changement — pense `Provider`/`Consumer`
-///    côté Flutter ;
-///  - type le résultat (`UserModel` au lieu de `Map<String, dynamic>`) ;
-///  - centralise le cycle de vie complet d'une session : démarrage de l'app
-///    (`initialize`), connexion, inscription + vérification OTP, déconnexion
-///    (locale ou forcée par le serveur), changement de mot de passe/téléphone.
-///
-/// Usage recommandé (`main.dart`) :
-/// ```dart
-/// void main() {
-///   final authService = AuthService();
-///   runApp(
-///     ChangeNotifierProvider.value(
-///       value: authService,
-///       child: const MyApp(),
-///     ),
-///   );
-///   authService.initialize(); // vérifie la session existante en tâche de fond
-/// }
-/// ```
-///
-/// Dans les widgets :
-/// ```dart
-/// final auth = context.watch<AuthService>();
-/// if (auth.status == AuthStatus.authenticated) {
-///   Text('Bonjour ${auth.currentUser!.prenom}');
-/// }
-/// ```
+/// [NOTIFICATIONS PUSH] Ce service enregistre/désenregistre également le
+/// token FCM du terminal auprès de Django (Module 6, `devices/*`) à chaque
+/// changement de session — c'est le point central le plus fiable pour ça :
+/// on est sûr d'avoir un JWT valide en main (nécessaire, `/devices/` exige
+/// `IsAuthenticated`), et ça couvre tous les chemins d'entrée/sortie de
+/// session (login, logout volontaire, logout forcé, relance de l'app).
 class AuthService extends ChangeNotifier {
   AuthService({EneoApiService? apiService})
       : _api = apiService ?? EneoApiService() {
@@ -85,6 +62,38 @@ class AuthService extends ChangeNotifier {
   }
 
   // ===========================================================================
+  // Notifications push (FCM) — voir note de classe ci-dessus
+  // ===========================================================================
+
+  /// Enregistre le token FCM courant auprès de Django. Volontairement
+  /// "fire-and-forget" (non attendu par les appelants) : un échec ici ne
+  /// doit jamais retarder ni faire échouer un login par ailleurs réussi
+  /// (voir aussi le try/catch absorbant dans [DeviceTokenApi]).
+  void _registerCurrentDeviceToken() {
+    unawaited(() async {
+      final token = await FirebaseMessagingService.instance.getCurrentToken();
+      if (token == null) return;
+      await DeviceTokenApi.instance.registerToken(
+        fcmToken: token,
+        deviceType: kIsWeb ? 'web' : 'android',
+      );
+    }());
+  }
+
+  /// Désenregistre le token FCM AVANT que la session ne soit nettoyée
+  /// (l'appel a besoin du JWT encore valide pour passer l'auth Django).
+  Future<void> _unregisterCurrentDeviceToken() async {
+    try {
+      final token = await FirebaseMessagingService.instance.getCurrentToken();
+      if (token != null) {
+        await DeviceTokenApi.instance.unregisterToken(token);
+      }
+    } catch (_) {
+      // Absorbé : ne doit jamais bloquer un logout.
+    }
+  }
+
+  // ===========================================================================
   // Démarrage de l'app
   // ===========================================================================
 
@@ -116,13 +125,18 @@ class AuthService extends ChangeNotifier {
     }
     notifyListeners();
 
-    // Filet de sécurité pour le consentement RGPD : si l'appel tenté juste
-    // après l'inscription (voir otp_screen.dart) avait échoué (réseau,
-    // serveur down...), on retente ici à CHAQUE démarrage de l'app tant
-    // qu'aucun GRANTED n'est retrouvé côté serveur. Volontairement non
-    // "awaited" : ça ne doit jamais retarder l'affichage du premier écran.
     if (_status == AuthStatus.authenticated) {
+      // Filet de sécurité pour le consentement RGPD : si l'appel tenté juste
+      // après l'inscription (voir otp_screen.dart) avait échoué (réseau,
+      // serveur down...), on retente ici à CHAQUE démarrage de l'app tant
+      // qu'aucun GRANTED n'est retrouvé côté serveur. Volontairement non
+      // "awaited" : ça ne doit jamais retarder l'affichage du premier écran.
       unawaited(_ensureConsentRecorded());
+
+      // Session déjà valide au relancement de l'app (ex. token FCM ayant
+      // tourné pendant que l'app était fermée) : on (ré)enregistre pour
+      // être sûr que Django a la dernière valeur.
+      _registerCurrentDeviceToken();
     }
   }
 
@@ -226,6 +240,12 @@ class AuthService extends ChangeNotifier {
       final user = UserModel.fromJson(data['user'] as Map<String, dynamic>);
       _currentUser = user;
       _status = AuthStatus.authenticated;
+
+      // [NOTIFICATIONS PUSH] Le JWT vient d'être stocké par
+      // EneoApiService.login() : on peut maintenant enregistrer le token
+      // FCM auprès de Django en toute sécurité.
+      _registerCurrentDeviceToken();
+
       return user;
     } on ApiException catch (e) {
       _setError(e);
@@ -249,6 +269,12 @@ class AuthService extends ChangeNotifier {
   Future<void> logout() async {
     _setLoading(true);
     try {
+      // [NOTIFICATIONS PUSH] Désenregistrer AVANT l'appel logout : le
+      // token FCM doit disparaître de Django tant que le JWT est encore
+      // valide, sinon la requête part sans Authorization et échoue (sans
+      // gravité — juste un device qui reste "Actif" un peu plus
+      // longtemps, voir _unregisterCurrentDeviceToken).
+      await _unregisterCurrentDeviceToken();
       await _api.logout();
     } finally {
       // §7.6 : purge du cache local hors-ligne au logout, que l'appel
@@ -265,6 +291,14 @@ class AuthService extends ChangeNotifier {
   /// automatiquement par [ApiClient.onSessionExpired]. Ne fait AUCUN appel
   /// réseau : le stockage est déjà nettoyé par `ApiClient._send()` avant que
   /// ce callback soit invoqué.
+  ///
+  /// [NOTIFICATIONS PUSH] Pas de désenregistrement du token ici : le JWT
+  /// est déjà mort côté serveur, l'appel `/devices/desenregistrer/`
+  /// échouerait de toute façon (401). Le device restera "Actif" jusqu'au
+  /// nettoyage automatique des tokens invalides côté Django (voir
+  /// `notifications/firebase.py` : un push qui échoue avec
+  /// `UNREGISTERED`/`InvalidRegistration` désactive le device
+  /// correspondant).
   void _handleForcedLogout() {
     // §7.6 : purge du cache local hors-ligne, ici aussi (pas seulement au
     // logout volontaire) — le token est déjà nettoyé par ApiClient._send()

@@ -34,6 +34,7 @@ import '../../shared/widgets/app_bottom_sheet.dart';
 import '../../shared/widgets/app_text_field.dart';
 import '../../design_system/buttons/app_button.dart';
 import '../payment/payment_screen.dart';
+import '../postpaid/facture_detail_screen.dart';
 import 'contracts_screen.dart';
 
 class ContratFacturesScreen extends StatefulWidget {
@@ -57,6 +58,11 @@ class _ContratFacturesScreenState extends State<ContratFacturesScreen> {
 
   late Future<List<FactureModel>> _factures;
 
+  /// Nom du client, requis par `FactureDetailPage` (affiché sur la
+  /// facture imprimable) — chargé en tâche de fond une seule fois, comme
+  /// dans `PostpaidScreen`.
+  String _nomClient = '';
+
   /// Compteurs du contrat, chargés en tâche de fond (jamais affichés —
   /// un contrat n'a qu'un compteur actif à la fois) : uniquement utile
   /// pour résoudre le libellé du compteur d'une facture et retrouver le
@@ -69,6 +75,17 @@ class _ContratFacturesScreenState extends State<ContratFacturesScreen> {
   void initState() {
     super.initState();
     _factures = _charger();
+    _chargerProfil();
+  }
+
+  Future<void> _chargerProfil() async {
+    try {
+      final result = await _repo.getProfile();
+      if (mounted) setState(() => _nomClient = result.data.nomComplet);
+    } on ApiException {
+      // Non bloquant : `FactureDetailPage` retombe sur 'Client' si le nom
+      // n'a pas pu être chargé (même parti pris que `PostpaidScreen`).
+    }
   }
 
   Future<List<FactureModel>> _charger() async {
@@ -185,8 +202,9 @@ class _ContratFacturesScreenState extends State<ContratFacturesScreen> {
                               index: entry.key,
                               child: _FactureContratTile(
                                 facture: entry.value,
+                                onTap: () => _ouvrirDetail(entry.value),
                                 onSignaler: () => _signalerAnomalie(entry.value),
-                                onTelecharger: () => _telechargerRecu(entry.value),
+                                onTelecharger: () => _ouvrirDetail(entry.value),
                                 onPayer: entry.value.statut == StatutFacture.impayee
                                     ? () => _payer(entry.value)
                                     : null,
@@ -319,21 +337,24 @@ class _ContratFacturesScreenState extends State<ContratFacturesScreen> {
     );
   }
 
-  Future<void> _telechargerRecu(FactureModel facture) async {
-    // Voir le même commentaire dans `postpaid_screen.dart` : le PDF n'est
-    // pas encore généré côté serveur, on informe honnêtement l'usager.
-    _showSnack('Préparation du reçu…');
-    try {
-      await _repo.getFactureRecu(facture.id);
-      if (!mounted) return;
-      _showSnack(
-        'Le reçu a été retrouvé côté serveur, mais la génération du PDF '
-        'à télécharger n’est pas encore disponible dans cette version.',
-      );
-    } on ApiException catch (e) {
-      if (!mounted) return;
-      _showSnack(e.message);
+  void _ouvrirDetail(FactureModel facture) {
+    if (_compteurs.isEmpty) {
+      _showSnack('Détail indisponible : aucun compteur résolu pour ce contrat.');
+      return;
     }
+    final compteur = _compteurs.firstWhere(
+      (c) => c.id == facture.idCompteur.toString(),
+      orElse: () => _compteurs.first,
+    );
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => FactureDetailPage(
+          facture: facture,
+          compteur: compteur,
+          nomClient: _nomClient.isNotEmpty ? _nomClient : 'Client',
+        ),
+      ),
+    );
   }
 
   void _showSnack(String message) {
@@ -389,12 +410,14 @@ class _FiltreChip extends StatelessWidget {
 /// compteur vient chaque facture.
 class _FactureContratTile extends StatelessWidget {
   final FactureModel facture;
+  final VoidCallback onTap;
   final VoidCallback onSignaler;
   final VoidCallback onTelecharger;
   final VoidCallback? onPayer;
 
   const _FactureContratTile({
     required this.facture,
+    required this.onTap,
     required this.onSignaler,
     required this.onTelecharger,
     this.onPayer,
@@ -404,56 +427,64 @@ class _FactureContratTile extends StatelessWidget {
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
-      child: AppCard(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Expanded(
-                  child: Text(facture.moisFacturation, style: AppTextStyles.h3),
-                ),
-                StatusBadge(label: facture.statutLabel),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Text(formatFcfa(facture.montantFcfa), style: AppTextStyles.h3),
-            const SizedBox(height: 2),
-            Text('Index : ${facture.indexConsommation.toStringAsFixed(0)} kWh',
-                style: AppTextStyles.caption),
-            const Divider(height: 20),
-            Row(
-              children: [
-                Expanded(
-                  child: TextButton.icon(
-                    onPressed: onTelecharger,
-                    icon: const Icon(Icons.download, size: 18),
-                    label: const Text('Reçu PDF'),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(16),
+        child: AppCard(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Expanded(
+                    child: Text(facture.moisFacturation, style: AppTextStyles.h3),
                   ),
-                ),
-                Expanded(
-                  child: TextButton.icon(
-                    onPressed: onSignaler,
-                    icon: const Icon(Icons.flag_outlined, size: 18),
-                    label: const Text('Anomalie'),
-                  ),
-                ),
-              ],
-            ),
-            if (onPayer != null) ...[
-              const SizedBox(height: 4),
-              SizedBox(
-                width: double.infinity,
-                child: TextButton.icon(
-                  onPressed: onPayer,
-                  icon: const Icon(Icons.payments_outlined, size: 18),
-                  label: const Text('Payer cette facture'),
-                ),
+                  Row(children: [
+                    StatusBadge(label: facture.statutLabel),
+                    const SizedBox(width: 4),
+                    const Icon(Icons.chevron_right, size: 18, color: Color(0xFF94A3B8)),
+                  ]),
+                ],
               ),
+              const SizedBox(height: 8),
+              Text(formatFcfa(facture.montantFcfa), style: AppTextStyles.h3),
+              const SizedBox(height: 2),
+              Text('Index : ${facture.indexConsommation.toStringAsFixed(0)} kWh',
+                  style: AppTextStyles.caption),
+              const Divider(height: 20),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextButton.icon(
+                      onPressed: onTelecharger,
+                      icon: const Icon(Icons.download, size: 18),
+                      label: const Text('Reçu PDF'),
+                    ),
+                  ),
+                  Expanded(
+                    child: TextButton.icon(
+                      onPressed: onSignaler,
+                      icon: const Icon(Icons.flag_outlined, size: 18),
+                      label: const Text('Anomalie'),
+                    ),
+                  ),
+                ],
+              ),
+              if (onPayer != null) ...[
+                const SizedBox(height: 4),
+                SizedBox(
+                  width: double.infinity,
+                  child: TextButton.icon(
+                    onPressed: onPayer,
+                    icon: const Icon(Icons.payments_outlined, size: 18),
+                    label: const Text('Payer cette facture'),
+                  ),
+                ),
+              ],
             ],
-          ],
+          ),
         ),
       ),
     );

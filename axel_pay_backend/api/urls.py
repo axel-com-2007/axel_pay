@@ -70,6 +70,7 @@ from .views import (
     NotificationHistoriqueView,
     DeviceRegisterView,
     DeviceUnregisterView,
+    DeviceUnregisterByTokenView, 
     # Module 7 — Back-office administrateur
     AdminDashboardKPIView,
     AdminUserManagementView,
@@ -86,7 +87,10 @@ from .views import (
     # Module 9 — Conformité / RGPD
     ExportDataView,
     DeleteAccountView,
+# Module 10 — Assistant de support IA
+    SupportChatView,
 )
+
 
 app_name = "api"
 
@@ -176,6 +180,7 @@ urlpatterns = [
     path("notifications/", NotificationHistoriqueView.as_view(), name="notification-historique"),
     path("devices/", DeviceRegisterView.as_view(), name="device-register"),
     path("devices/<int:id_device>/desenregistrer/", DeviceUnregisterView.as_view(), name="device-unregister"),
+    path("devices/desenregistrer/", DeviceUnregisterByTokenView.as_view(), name="device-unregister-by-token"), 
 
     # ==========================================================================
     # MODULE 7 — BACK-OFFICE ADMINISTRATEUR (CDC 5.4 — RG-04, RG-05)
@@ -206,4 +211,10 @@ urlpatterns = [
     # ==========================================================================
     path("compte/export/", ExportDataView.as_view(), name="compte-export"),
     path("compte/desactiver/", DeleteAccountView.as_view(), name="compte-desactiver"),
+
+    # ==========================================================================
+    # MODULE 10 — ASSISTANT DE SUPPORT IA (écran "Assistance")
+    # ==========================================================================
+    path("support/chat/", SupportChatView.as_view(), name="support-chat"),
+
 ]

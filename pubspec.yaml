@@ -26,6 +26,13 @@ dependencies:
   latlong2: ^0.9.1
    # Position GPS de l'utilisateur
   geolocator: ^14.0.2
+  sensors_plus: ^6.1.1
+  firebase_core: ^4.0.0
+  firebase_messaging: ^16.0.0
+  video_player: ^2.10.0
+  pdf: ^3.10.8
+  printing: ^5.13.1
+  
 
   # Demande des permissions (Android/iOS)
   permission_handler: ^12.0.1

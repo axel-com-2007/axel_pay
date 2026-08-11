@@ -52,6 +52,7 @@ import '../prepaid/prepaid_screen.dart';
 import '../settings/settings_screen.dart';
 import '../support/support_screen.dart';
 import 'calendar_history_screen.dart';
+import '../notifications/notifications_screen.dart';
 import 'contract_search_overlay.dart';
 
 /// Nombre de contrats affichés d'emblée sur l'accueil (les plus récents).
@@ -333,7 +334,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final facture = _factureUrgentePostpaye;
     if (facture == null) {
       Navigator.of(context).push(
-        MaterialPageRoute(builder: (_) => PostpaidScreen(compteur: c)),
+        MaterialPageRoute(builder: (_) => PostpaidScreen(compteur: c, nomClient: user?.nomComplet)),
       );
       return;
     }
@@ -522,7 +523,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   ),
                   const SizedBox(width: 10),
                   _NotificationBell(
-                    onTap: () => _showSnack('Aucune nouvelle notification pour le moment.'),
+                    onTap: () => Navigator.of(context).push(
+                          MaterialPageRoute(builder: (_) => const NotificationsScreen()),
+                                                      ),
                   ),
                 ],
               ),

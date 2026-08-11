@@ -5,18 +5,17 @@
 // notification sur l'accueil. Propose 3 façons de joindre le support :
 //  - Appeler un agent support (numéro copiable, pas d'intégration
 //    téléphonique réelle disponible dans ce backend)
-//  - Écrire un message dans un chat (non implémenté pour l'instant,
-//    comme noté dans les tâches — honnête plutôt que simulé)
-//  - Passer à l'agence (localisation à venir)
-// Suit le même parti pris que `SettingsScreen` § "Aide & support" :
-// aucun endpoint dédié n'existe côté backend pour le support, donc ces
-// actions restent volontairement honnêtes (pas de faux succès simulé).
+//  - Écrire un message à l'assistant de support IA (MODULE 10 backend,
+//    `POST /support/chat/`) — cf. `SupportChatScreen`
+//  - Passer à l'agence (ouvre la carte OpenStreetMap des agences Eneo)
 // ============================================================
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/app_card.dart';
+import '../map_screen.dart';
+import 'support_chat_screen.dart';
 
 class SupportScreen extends StatelessWidget {
   const SupportScreen({super.key});
@@ -64,17 +63,20 @@ class SupportScreen extends StatelessWidget {
                     icon: Icons.chat_bubble_outline_rounded,
                     iconColor: AppColors.secondaryGreenDark,
                     title: 'Écrire un message',
-                    subtitle: 'Chat en direct — bientôt disponible',
-                    onTap: () => _showSnack(context, 'Le chat en direct sera bientôt disponible.'),
+                    subtitle: 'Discuter avec l’assistant Eneo',
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const SupportChatScreen()),
+                    ),
                   ),
                   const Divider(height: 1, color: AppColors.divider),
                   SettingsTile(
                     icon: Icons.storefront_outlined,
                     iconColor: AppColors.warning,
                     title: 'Passer à l’agence',
-                    subtitle: 'Localisation des agences — bientôt disponible',
-                    onTap: () =>
-                        _showSnack(context, 'La localisation des agences sera bientôt disponible.'),
+                    subtitle: 'Voir les agences Eneo sur la carte',
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const AgencyMapScreen()),
+                    ),
                   ),
                 ],
               ),

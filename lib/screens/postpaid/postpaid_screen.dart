@@ -27,10 +27,12 @@ import '../../shared/widgets/app_bottom_sheet.dart';
 import '../../shared/widgets/app_text_field.dart';
 import '../../design_system/buttons/app_button.dart';
 import '../payment/payment_screen.dart';
+import 'facture_detail_screen.dart';
 
 class PostpaidScreen extends StatefulWidget {
   final CompteurModel compteur;
-  const PostpaidScreen({super.key, required this.compteur});
+  final String? nomClient;
+  const PostpaidScreen({super.key, required this.compteur, this.nomClient});
 
   @override
   State<PostpaidScreen> createState() => _PostpaidScreenState();
@@ -38,6 +40,7 @@ class PostpaidScreen extends StatefulWidget {
 
 class _PostpaidScreenState extends State<PostpaidScreen> {
   final _repo = EneoRepository();
+  String _nomClient = '';
   bool afficherEnFcfa = false;
   bool historiqueComplet = false;
 
@@ -57,10 +60,21 @@ class _PostpaidScreenState extends State<PostpaidScreen> {
   @override
   void initState() {
     super.initState();
+    _nomClient = widget.nomClient ?? '';
     _factures = _chargerFactures();
     _consommation = _idCompteur != null
         ? _repo.getConsommation(_idCompteur!)
         : Future.value(<ConsommationPoint>[]);
+    if (_nomClient.isEmpty) _chargerProfil();
+  }
+
+  Future<void> _chargerProfil() async {
+    try {
+      final result = await _repo.getProfile();
+      if (mounted) setState(() => _nomClient = result.data.nomComplet);
+    } catch (_) {
+      // Profil non critique — on continue sans nom.
+    }
   }
 
   Future<List<FactureModel>> _chargerFactures() async {
@@ -185,8 +199,9 @@ class _PostpaidScreenState extends State<PostpaidScreen> {
                       index: entry.key,
                       child: _FactureTile(
                         facture: entry.value,
+                        onTap: () => _ouvrirDetail(entry.value),
                         onSignaler: () => _signalerAnomalie(context, entry.value),
-                        onTelecharger: () => _telechargerRecu(context, entry.value),
+                        onTelecharger: () => _ouvrirDetail(entry.value),
                         onPayer: entry.value.statut == StatutFacture.impayee
                             ? () => _payer(entry.value)
                             : null,
@@ -442,25 +457,16 @@ class _PostpaidScreenState extends State<PostpaidScreen> {
     );
   }
 
-  Future<void> _telechargerRecu(BuildContext context, FactureModel facture) async {
-    // ⚠️ `FactureReçuPDFView` ne génère pas encore de vrai PDF côté serveur
-    // (cf. commentaire "TODO INTEGRATION : générer le PDF... et le
-    // retourner en FileResponse" dans views.py) : il renvoie pour l'instant
-    // les données brutes du reçu en JSON. On informe honnêtement l'usager
-    // plutôt que de simuler un téléchargement qui n'existe pas.
-    _showSnack(context, 'Préparation du reçu…');
-    try {
-      await _repo.getFactureRecu(facture.id);
-      if (!mounted) return;
-      _showSnack(
-        context,
-        'Le reçu a été retrouvé côté serveur, mais la génération du PDF '
-        'télécharger n’est pas encore disponible dans cette version.',
-      );
-    } on ApiException catch (e) {
-      if (!mounted) return;
-      _showSnack(context, e.message);
-    }
+  void _ouvrirDetail(FactureModel facture) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => FactureDetailPage(
+          facture: facture,
+          compteur: widget.compteur,
+          nomClient: _nomClient.isNotEmpty ? _nomClient : 'Client',
+        ),
+      ),
+    );
   }
 
   void _showSnack(BuildContext context, String message) {
@@ -470,12 +476,14 @@ class _PostpaidScreenState extends State<PostpaidScreen> {
 
 class _FactureTile extends StatelessWidget {
   final FactureModel facture;
+  final VoidCallback onTap;
   final VoidCallback onSignaler;
   final VoidCallback onTelecharger;
   final VoidCallback? onPayer;
 
   const _FactureTile({
     required this.facture,
+    required this.onTap,
     required this.onSignaler,
     required this.onTelecharger,
     this.onPayer,
@@ -485,18 +493,25 @@ class _FactureTile extends StatelessWidget {
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
-      child: AppCard(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(facture.moisFacturation, style: AppTextStyles.h3),
-                StatusBadge(label: facture.statutLabel),
-              ],
-            ),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(16),
+        child: AppCard(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(facture.moisFacturation, style: AppTextStyles.h3),
+                  Row(children: [
+                    StatusBadge(label: facture.statutLabel),
+                    const SizedBox(width: 4),
+                    const Icon(Icons.chevron_right, size: 18, color: Color(0xFF94A3B8)),
+                  ]),
+                ],
+              ),
             const SizedBox(height: 8),
             Text(formatFcfa(facture.montantFcfa), style: AppTextStyles.h3),
             const SizedBox(height: 2),
@@ -535,6 +550,7 @@ class _FactureTile extends StatelessWidget {
           ],
         ),
       ),
+    ),
     );
   }
 }

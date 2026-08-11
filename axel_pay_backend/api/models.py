@@ -104,6 +104,21 @@ class FacturesPostpayees(models.Model):
     date_creation = models.DateTimeField()
     id_compteur = models.ForeignKey(Compteurs, models.DO_NOTHING, db_column='id_compteur')
 
+    # ── NOUVEAUX CHAMPS (migration SQL requise) ───────────────────
+    index_ancien = models.DecimalField(
+        max_digits=10, decimal_places=2, blank=True, null=True,
+        db_comment="Relevé précédent du compteur (kWh). NULL pour la 1re facture.",
+    )
+    index_nouveau = models.DecimalField(
+        max_digits=10, decimal_places=2, blank=True, null=True,
+        db_comment="Relevé actuel du compteur (kWh).",
+    )
+    date_releve = models.DateField(
+        blank=True, null=True,
+        db_comment="Date du relevé physique par l'agent.",
+    )
+    # ─────────────────────────────────────────────────────────────
+
     class Meta:
         managed = False
         db_table = 'factures_postpayees'

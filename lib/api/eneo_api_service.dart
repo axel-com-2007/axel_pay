@@ -502,6 +502,11 @@ class EneoApiService {
 
   Future<dynamic> listNotifications() => _client.get('/notifications/');
 
+  /// Page suivante de `/notifications/` : `NotificationHistoriqueView` est
+  /// paginée (`StandardResultsSetPagination`, 20/page) — [url] est le lien
+  /// `next` absolu renvoyé par DRF. Même pattern que `listContratsPage`.
+  Future<dynamic> listNotificationsPage(String url) => _client.get(url);
+
   Future<Map<String, dynamic>> registerDevice({
     required String fcmToken,
     required String typeAppareil,
@@ -605,6 +610,20 @@ class EneoApiService {
     final data = await _client.post('/compte/desactiver/', data: {
       'mot_de_passe_confirmation': motDePasseConfirmation,
     });
+    return data as Map<String, dynamic>;
+  }
+
+  // =========================================================================
+  // MODULE 10 — Assistant de support IA (écran Assistance)
+  // =========================================================================
+
+  /// [messages] est l'historique COMPLET de la conversation (le serveur ne
+  /// garde aucun état, cf. `SupportChatView`) : liste de
+  /// `{'role': 'user'|'assistant', 'content': '...'}`, dernier élément
+  /// obligatoirement `role: 'user'`.
+  /// Réponse : `{'reponse': '...', 'escalade_recommandee': bool}`.
+  Future<Map<String, dynamic>> supportChat(List<Map<String, String>> messages) async {
+    final data = await _client.post('/support/chat/', data: {'messages': messages});
     return data as Map<String, dynamic>;
   }
 }

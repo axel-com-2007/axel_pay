@@ -194,7 +194,6 @@ class FacturesPostpayeesSerializer(serializers.ModelSerializer):
         model = FacturesPostpayees
         fields = '__all__'
 
-
 class GestionCompteursSerializer(serializers.ModelSerializer):
     """
     REFONTE v1.5 — Une délégation porte soit sur `id_compteur`, soit sur
@@ -206,26 +205,52 @@ class GestionCompteursSerializer(serializers.ModelSerializer):
     class Meta:
         model = GestionCompteurs
         fields = '__all__'
+        # IMPORTANT : on désactive les UniqueTogetherValidator auto-générés
+        # par DRF à partir de `Meta.unique_together` du modèle. Ces
+        # validators forcent `required=True` sur TOUS les champs qu'ils
+        # couvrent (id_compteur ET id_contrat), ce qui écrase le
+        # `required=False` défini ci-dessous et empêche d'envoyer une
+        # délégation à portée "contrat" (sans id_compteur) ou "compteur"
+        # (sans id_contrat) — DRF exige alors à tort le champ absent.
+        # L'exclusivité et l'unicité restent garanties par `validate()`
+        # ci-dessous et par les contraintes SQL (CHECK + UNIQUE) en base.
+        validators = []
         extra_kwargs = {
             'statut': {'required': False},
-            'date_octroi': {'required': False},
-            'id_compteur': {'required': False},
-            'id_contrat': {'required': False},
+            'date_octroi': {'required': False, 'allow_null': True},
+            'id_compteur': {'required': False, 'allow_null': True},
+            'id_contrat': {'required': False, 'allow_null': True},
         }
 
     def validate(self, attrs):
-        # En PATCH partiel, un champ absent de `attrs` doit être complété
-        # depuis l'instance existante pour que la règle d'exclusivité reste
-        # évaluée sur l'état complet de l'objet, pas seulement sur le delta.
         id_compteur = attrs.get('id_compteur', getattr(self.instance, 'id_compteur', None))
         id_contrat = attrs.get('id_contrat', getattr(self.instance, 'id_contrat', None))
         if bool(id_compteur) == bool(id_contrat):
             raise serializers.ValidationError(
                 "Une délégation doit porter sur exactement un compteur (id_compteur) "
-                "OU un contrat entier (id_contrat), jamais les deux, jamais aucun des deux."
+                "ou un contrat entier (id_contrat), jamais les deux, jamais aucun des deux."
             )
-        return attrs
 
+        # On avait désactivé les UniqueTogetherValidator auto-générés
+        # (`validators = []` ci-dessus) car ils forçaient id_compteur ET
+        # id_contrat à `required=True`. Du coup on reproduit ici, à la
+        # main, la même vérification (id_user + cible + type_droit déjà
+        # utilisés) — sinon un doublon n'est plus intercepté par DRF et
+        # remonte comme une IntegrityError Postgres (500) au lieu d'un 400
+        # propre.
+        id_user = attrs.get('id_user', getattr(self.instance, 'id_user', None))
+        type_droit = attrs.get('type_droit', getattr(self.instance, 'type_droit', None))
+        doublons = GestionCompteurs.objects.filter(id_user=id_user, type_droit=type_droit)
+        doublons = doublons.filter(id_compteur=id_compteur) if id_compteur \
+            else doublons.filter(id_contrat=id_contrat)
+        if self.instance is not None:
+            doublons = doublons.exclude(pk=self.instance.pk)
+        if doublons.exists():
+            raise serializers.ValidationError(
+                "Une délégation avec ce même droit existe déjà pour cet utilisateur sur cette cible."
+            )
+
+        return attrs
 
 class HistoriqueArchiveSerializer(serializers.ModelSerializer):
     class Meta:

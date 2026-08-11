@@ -35,7 +35,8 @@ SECRET_KEY = 'django-insecure--e^fqp81il@=#ov8&4ets644h#v%wx1yw_!x-7@mh)(6&&2ea6
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
-
+# ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+GEMINI_API_KEY= os.environ.get("GEMINI_API_KEY","AQ.Ab8RN6KNdxUjbCjjE_hXSrgp5yihCZxmr34VCKjT-abOkljbkw")
 ALLOWED_HOSTS = ['192.168.1.230', 'localhost', '127.0.0.1']
 MOBILE_MONEY_WEBHOOK_SECRET = os.environ.get("MOBILE_MONEY_WEBHOOK_SECRET")
 
@@ -111,6 +112,40 @@ ORANGE_SMS_CLIENT_SECRET = os.environ.get("ORANGE_SMS_CLIENT_SECRET")
 # Orange souscrit (aucune valeur fictive fournie ici : un mauvais expéditeur
 # ferait échouer silencieusement l'envoi côté opérateur).
 ORANGE_SMS_SENDER_ADDRESS = os.environ.get("ORANGE_SMS_SENDER_ADDRESS")
+
+
+# ==============================================================================
+# FIREBASE — Notifications push (FCM, module 6 — api/services/firebase.py)
+# ==============================================================================
+# Rappel d'architecture (cf. demande initiale) : Firebase sert UNIQUEMENT au
+# transport des notifications push (FCM). L'authentification reste 100%
+# Django/JWT (UsersJWTAuthentication) — Firebase Authentication n'est utilisé
+# nulle part.
+#
+# `FIREBASE_CREDENTIALS_PATH` pointe vers le fichier JSON de compte de
+# service (Console Firebase > Project Settings > Service accounts >
+# "Generate new private key"). Contrairement à NOTCHPAY_*/ORANGE_SMS_*, ce
+# n'est PAS une valeur qu'on peut committer avec un fallback en dur : c'est
+# un chemin de fichier, pas un secret texte, donc il n'y a rien de sensé à
+# mettre "en dur" ici — le fallback ci-dessous suppose juste que le fichier
+# existe à cet emplacement local, à toi de l'y déposer (voir SETUP.md).
+#
+# ⚠️ Ne JAMAIS committer secrets/firebase-service-account.json — ajoute-le à
+# .gitignore. En production, monte ce fichier via ton gestionnaire de
+# secrets plutôt que de le déposer sur le filesystem de l'image/serveur.
+FIREBASE_CREDENTIALS_PATH = os.environ.get(
+    "FIREBASE_CREDENTIALS_PATH",
+    BASE_DIR / "secrets" / "firebase-service-account.json",
+)
+
+# Nom du canal de notification Android par défaut (doit correspondre EXACTEMENT
+# à la valeur `channel_id` utilisée côté Django dans
+# api/services/firebase.py::send_push_notification ET au meta-data
+# `com.google.firebase.messaging.default_notification_channel_id` dans
+# android/app/src/main/AndroidManifest.xml côté Flutter).
+FIREBASE_ANDROID_NOTIFICATION_CHANNEL_ID = os.environ.get(
+    "FIREBASE_ANDROID_NOTIFICATION_CHANNEL_ID", "axelpay_notifications"
+)
 
 
 # ==============================================================================

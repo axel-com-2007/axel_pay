@@ -247,6 +247,9 @@ class CompteurModel {
   // `id_adresse`.
   final String? numeroContrat;
 
+  /// Ville du compteur (ex: "Douala"). Résolu depuis la table Adresses.
+  final String? ville;
+
   // Champs spécifiques Postpayé
   final double? soldeDuFcfa;
 
@@ -266,6 +269,7 @@ class CompteurModel {
     required this.derniereMiseAJour,
     required this.idContrat,
     this.numeroContrat,
+    this.ville,
     this.soldeDuFcfa,
     this.soldeKwh,
     this.soldeFcfaEquivalent,
@@ -304,6 +308,7 @@ class CompteurModel {
 
   CompteurModel copyWith({
     String? adresse,
+    String? ville,
     bool? actif,
     DateTime? derniereMiseAJour,
     String? numeroContrat,
@@ -323,6 +328,7 @@ class CompteurModel {
       derniereMiseAJour: derniereMiseAJour ?? this.derniereMiseAJour,
       idContrat: idContrat,
       numeroContrat: numeroContrat ?? this.numeroContrat,
+      ville: ville ?? this.ville,
       soldeDuFcfa: soldeDuFcfa ?? this.soldeDuFcfa,
       soldeKwh: soldeKwh ?? this.soldeKwh,
       soldeFcfaEquivalent: soldeFcfaEquivalent ?? this.soldeFcfaEquivalent,
@@ -361,6 +367,7 @@ class CompteurModel {
         'derniereMiseAJour': derniereMiseAJour.toIso8601String(),
         'idContrat': idContrat,
         'numeroContrat': numeroContrat,
+        'ville': ville,
         'soldeDuFcfa': soldeDuFcfa,
         'soldeKwh': soldeKwh,
         'soldeFcfaEquivalent': soldeFcfaEquivalent,
@@ -380,6 +387,7 @@ class CompteurModel {
           DateTime.tryParse(json['derniereMiseAJour'] as String? ?? '') ?? DateTime.now(),
       idContrat: json['idContrat'] as int? ?? 0,
       numeroContrat: json['numeroContrat'] as String?,
+      ville: json['ville'] as String?,
       soldeDuFcfa: (json['soldeDuFcfa'] as num?)?.toDouble(),
       soldeKwh: (json['soldeKwh'] as num?)?.toDouble(),
       soldeFcfaEquivalent: (json['soldeFcfaEquivalent'] as num?)?.toDouble(),
@@ -442,6 +450,16 @@ class FactureModel {
   /// complété via [copyWith].
   final String? compteurNumero;
 
+  // ── NOUVEAUX CHAMPS (ajoutés après migration DB) ─────────────
+  /// Relevé précédent du compteur en kWh. NULL pour la 1re facture.
+  final double? indexAncien;
+
+  /// Relevé actuel du compteur en kWh.
+  final double? indexNouveau;
+
+  /// Date à laquelle le relevé physique a été effectué par l'agent.
+  final DateTime? dateReleve;
+
   const FactureModel({
     required this.id,
     required this.moisFacturation,
@@ -451,6 +469,9 @@ class FactureModel {
     required this.dateLimite,
     this.idCompteur = 0,
     this.compteurNumero,
+    this.indexAncien,
+    this.indexNouveau,
+    this.dateReleve,
   });
 
   /// Mappe la sortie de `FacturesPostpayeesSerializer`.
@@ -465,10 +486,13 @@ class FactureModel {
       idCompteur: json['id_compteur'] is int
           ? json['id_compteur'] as int
           : int.tryParse('${json['id_compteur']}') ?? 0,
+      indexAncien: json['index_ancien'] != null ? _num(json['index_ancien']) : null,
+      indexNouveau: json['index_nouveau'] != null ? _num(json['index_nouveau']) : null,
+      dateReleve: json['date_releve'] != null ? DateTime.tryParse('${json['date_releve']}') : null,
     );
   }
 
-  FactureModel copyWith({String? compteurNumero}) {
+  FactureModel copyWith({String? compteurNumero, double? indexAncien, double? indexNouveau, DateTime? dateReleve}) {
     return FactureModel(
       id: id,
       moisFacturation: moisFacturation,
@@ -478,6 +502,9 @@ class FactureModel {
       dateLimite: dateLimite,
       idCompteur: idCompteur,
       compteurNumero: compteurNumero ?? this.compteurNumero,
+      indexAncien: indexAncien ?? this.indexAncien,
+      indexNouveau: indexNouveau ?? this.indexNouveau,
+      dateReleve: dateReleve ?? this.dateReleve,
     );
   }
 
@@ -505,6 +532,9 @@ class FactureModel {
         'dateLimite': dateLimite.toIso8601String(),
         'idCompteur': idCompteur,
         'compteurNumero': compteurNumero,
+        'indexAncien': indexAncien,
+        'indexNouveau': indexNouveau,
+        'dateReleve': dateReleve?.toIso8601String(),
       };
 
   factory FactureModel.fromCacheJson(Map<String, dynamic> json) {
@@ -517,6 +547,9 @@ class FactureModel {
       dateLimite: DateTime.tryParse(json['dateLimite'] as String? ?? '') ?? DateTime.now(),
       idCompteur: json['idCompteur'] as int? ?? 0,
       compteurNumero: json['compteurNumero'] as String?,
+      indexAncien: (json['indexAncien'] as num?)?.toDouble(),
+      indexNouveau: (json['indexNouveau'] as num?)?.toDouble(),
+      dateReleve: json['dateReleve'] != null ? DateTime.tryParse(json['dateReleve'] as String) : null,
     );
   }
 }
@@ -748,6 +781,74 @@ DroitDelegation _droitFromApi(String? v) {
 /// ne produit plus jamais Gestionnaire/Tiers_Lecture/Tiers_Paiement).
 String droitToApi(DroitDelegation d) =>
     d == DroitDelegation.lecture ? 'Lecture' : 'Lecture_Paiement';
+
+/// Niveau de criticité affiché sur `NotificationModel` (`niveau_criticite`
+/// côté backend, colonne `enum_niveau_criticite` — utilisée par le worker
+/// asynchrone pour choisir la cascade de canaux, cf. `views.py` MODULE 6).
+enum NiveauCriticiteNotification { critique, normal, info }
+
+NiveauCriticiteNotification _criticiteFromApi(String? v) {
+  switch (v) {
+    case 'Critique':
+      return NiveauCriticiteNotification.critique;
+    case 'Info':
+      return NiveauCriticiteNotification.info;
+    default:
+      return NiveauCriticiteNotification.normal;
+  }
+}
+
+/// Une entrée de `GET /notifications/` (`NotificationsSerializer`,
+/// `db_table_comment` : "Historique des messages envoyés, orchestrés selon
+/// la matrice de criticité multicanale"). Vue en lecture seule côté client
+/// — l'envoi effectif (cascade Push → WhatsApp → SMS) est géré par un
+/// worker asynchrone hors périmètre de l'app (cf. commentaire MODULE 6 de
+/// `views.py`).
+///
+/// ⚠️ Il n'existe aucun endpoint `PATCH`/marquer-comme-lu côté backend à ce
+/// jour : [estLue] reflète donc uniquement ce que le serveur a déjà
+/// enregistré (`statut == 'Lu'` ou `date_lecture` renseignée), jamais une
+/// action locale de l'utilisateur.
+class NotificationModel {
+  final String id;
+  final String objet;
+  final String contenu;
+  final String canal; // 'Push' / 'WhatsApp' / 'SMS' (cascade, cf. views.py)
+  final NiveauCriticiteNotification criticite;
+  final String statut; // 'Envoyé' / 'Échoué' / 'Lu'
+  final DateTime dateEnvoi;
+  final DateTime? dateLecture;
+  final int? idCompteur;
+
+  const NotificationModel({
+    required this.id,
+    required this.objet,
+    required this.contenu,
+    required this.canal,
+    required this.criticite,
+    required this.statut,
+    required this.dateEnvoi,
+    required this.dateLecture,
+    required this.idCompteur,
+  });
+
+  bool get estLue => statut == 'Lu' || dateLecture != null;
+  bool get echec => statut == 'Échoué';
+
+  factory NotificationModel.fromJson(Map<String, dynamic> json) {
+    return NotificationModel(
+      id: '${json['id_notification']}',
+      objet: json['objet'] as String? ?? '',
+      contenu: json['contenu'] as String? ?? '',
+      canal: json['canal'] as String? ?? 'Push',
+      criticite: _criticiteFromApi(json['niveau_criticite'] as String?),
+      statut: json['statut'] as String? ?? 'Envoyé',
+      dateEnvoi: _date(json['date_envoi']),
+      dateLecture: json['date_lecture'] != null ? DateTime.tryParse('${json['date_lecture']}') : null,
+      idCompteur: json['id_compteur'] as int?,
+    );
+  }
+}
 
 class NotificationPrefModel {
   final String cle;
