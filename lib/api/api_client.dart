@@ -58,6 +58,7 @@ class ApiClient {
     '/auth/password-reset/',
     '/auth/password-reset/confirm/',
     '/paiements/webhook/', // authentifié par signature HMAC, pas par JWT
+    '/i18n/traduire/', // AllowAny côté Django : login/inscription/OTP aussi traduits
   ];
 
   bool _isPublicPath(String path) =>

@@ -498,14 +498,42 @@ class EneoApiService {
 
   // =========================================================================
   // MODULE 6 — Notifications
+  // Partagé entre Dashboard ET Paramètres : même endpoint, même donnée.
+  // Le badge "non lues" est synchronisé automatiquement car les deux écrans
+  // interrogent le même `/notifications/non-lues/count/`.
   // =========================================================================
 
-  Future<dynamic> listNotifications() => _client.get('/notifications/');
+  /// Liste paginée des notifications.
+  /// [nonLuesSeulement] : si true, n'inclut que les notifications non lues
+  /// (pratique pour l'écran Paramètres qui affiche un compteur de non-lues).
+  Future<dynamic> listNotifications({bool nonLuesSeulement = false}) {
+    final query = nonLuesSeulement ? {'non_lues': 'true'} : null;
+    return _client.get('/notifications/', query: query);
+  }
 
-  /// Page suivante de `/notifications/` : `NotificationHistoriqueView` est
-  /// paginée (`StandardResultsSetPagination`, 20/page) — [url] est le lien
-  /// `next` absolu renvoyé par DRF. Même pattern que `listContratsPage`.
+  /// Page suivante de `/notifications/` (pagination DRF, lien `next`).
   Future<dynamic> listNotificationsPage(String url) => _client.get(url);
+
+  /// Retourne le nombre de notifications non lues : {"count": int}.
+  /// Appelé par le badge du dashboard ET par l'écran Paramètres → synchronisé.
+  Future<int> countNotificationsNonLues() async {
+    final data = await _client.get('/notifications/non-lues/count/');
+    return (data as Map<String, dynamic>)['count'] as int? ?? 0;
+  }
+
+  /// Marque une notification individuelle comme lue (date_lecture = now()).
+  /// Appel depuis dashboard OU paramètres — le flag est commun en base.
+  Future<Map<String, dynamic>> marquerNotificationLue(String idNotification) async {
+    final data = await _client.patch('/notifications/$idNotification/lue/');
+    return data as Map<String, dynamic>;
+  }
+
+  /// Marque toutes les notifications non lues comme lues.
+  /// Accessible depuis le dashboard ET l'écran Paramètres.
+  Future<Map<String, dynamic>> marquerToutesNotificationsLues() async {
+    final data = await _client.post('/notifications/tout-lire/');
+    return data as Map<String, dynamic>;
+  }
 
   Future<Map<String, dynamic>> registerDevice({
     required String fcmToken,
@@ -614,16 +642,68 @@ class EneoApiService {
   }
 
   // =========================================================================
-  // MODULE 10 — Assistant de support IA (écran Assistance)
+  // MODULE 10 — Assistant de support IA (écran Assistance & Paramètres)
   // =========================================================================
+  // Point d'entrée UNIQUE du chatbot Gemini — appelé indifféremment depuis :
+  //   • L'écran "Support" du dashboard (bouton "Chat en direct").
+  //   • L'écran "Paramètres" (section "Chat en direct" / "Écrire un message").
+  // Les deux écrans envoient le même payload ; le serveur est stateless.
 
-  /// [messages] est l'historique COMPLET de la conversation (le serveur ne
-  /// garde aucun état, cf. `SupportChatView`) : liste de
+  /// Envoie un tour de conversation au chatbot IA de support.
+  ///
+  /// [messages] est l'historique COMPLET de la conversation : liste de
   /// `{'role': 'user'|'assistant', 'content': '...'}`, dernier élément
   /// obligatoirement `role: 'user'`.
+  ///
   /// Réponse : `{'reponse': '...', 'escalade_recommandee': bool}`.
+  /// Si [escalade_recommandee] est true, proposer à l'utilisateur d'ouvrir
+  /// un ticket via [ouvrirTicket].
   Future<Map<String, dynamic>> supportChat(List<Map<String, String>> messages) async {
     final data = await _client.post('/support/chat/', data: {'messages': messages});
+    return data as Map<String, dynamic>;
+  }
+
+  // =========================================================================
+  // MODULE 11 — Tickets de support (écran Paramètres → "Ouvrir un ticket")
+  // =========================================================================
+  // Crée un litige formel en base ET envoie deux e-mails HTML professionnels :
+  //   • Au client    : accusé de réception + numéro de ticket.
+  //   • À l'équipe support : fiche complète du dossier client.
+
+  /// Ouvre un ticket de support et déclenche l'envoi des e-mails SMTP.
+  ///
+  /// Paramètres :
+  ///   [sujet]       : titre court du problème (obligatoire, max 200 chars).
+  ///   [description] : détail complet (obligatoire, min 20 chars).
+  ///   [categorie]   : "Facturation"|"Recharge"|"Technique"|"Paiement"|"Autre"
+  ///                   (optionnel, défaut "Autre").
+  ///   [priorite]    : "Normale"|"Haute"|"Urgente" (optionnel, défaut "Normale").
+  ///   [idCompteur]  : ID du compteur concerné (optionnel).
+  ///
+  /// Réponse 201 :
+  ///   {
+  ///     "ticket_id":            "TKT-XXXXXXXXXXXXXXXX",
+  ///     "statut":               "Ouvert",
+  ///     "message":              String,
+  ///     "email_client_envoye":  bool,
+  ///     "email_support_envoye": bool
+  ///   }
+  Future<Map<String, dynamic>> ouvrirTicket({
+    required String sujet,
+    required String description,
+    String categorie = 'Autre',
+    String priorite  = 'Normale',
+    int?   idCompteur,
+  }) async {
+    final payload = <String, dynamic>{
+      'sujet'      : sujet,
+      'description': description,
+      'categorie'  : categorie,
+      'priorite'   : priorite,
+    };
+    if (idCompteur != null) payload['id_compteur'] = idCompteur;
+
+    final data = await _client.post('/support/tickets/ouvrir/', data: payload);
     return data as Map<String, dynamic>;
   }
 }

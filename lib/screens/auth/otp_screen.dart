@@ -21,6 +21,7 @@ import 'package:provider/provider.dart';
 
 import '../../api/auth_service.dart';
 import '../../api/api_exception.dart';
+import '../../l10n/app_strings.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/animations/animations.dart';
 import '../../widgets/primary_button.dart';
@@ -63,7 +64,7 @@ class _OtpScreenState extends State<OtpScreen> {
 
   Future<void> _verifier() async {
     if (code.length != 6) {
-      _showSnack('Saisissez les 6 chiffres reçus par SMS');
+      _showSnack(S.read(context).otpSaisir6Chiffres);
       _shakeCode.shake();
       return;
     }
@@ -110,8 +111,9 @@ class _OtpScreenState extends State<OtpScreen> {
         Navigator.of(context).popUntil((route) => route.isFirst);
       } else {
         if (!mounted) return;
+        final compteVerifieMessage = S.read(context).otpCompteVerifie;
         Navigator.of(context).pop();
-        _showSnack('Compte vérifié. Vous pouvez maintenant vous connecter.');
+        _showSnack(compteVerifieMessage);
       }
     } on ApiValidationException catch (e) {
       // Ex: "otp": "Code invalide ou expiré." (VerifyOTPView)
@@ -135,9 +137,10 @@ class _OtpScreenState extends State<OtpScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final s = S.of(context);
     return Scaffold(
       backgroundColor: AppColors.background,
-      appBar: AppBar(title: const Text('Vérification')),
+      appBar: AppBar(title: Text(s.otpAppBarTitre)),
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 24),
@@ -154,10 +157,10 @@ class _OtpScreenState extends State<OtpScreen> {
                 ),
               ),
               const SizedBox(height: 8),
-              const Text('Entrez le code reçu', style: AppTextStyles.h2),
+              Text(s.otpEntrezLeCodeRecu, style: AppTextStyles.h2),
               const SizedBox(height: 6),
               Text(
-                'Un code à 6 chiffres a été envoyé au ${widget.telephone}',
+                s.otpCodeEnvoyeAu(widget.telephone),
                 style: AppTextStyles.bodyMuted,
               ),
               const SizedBox(height: 28),
@@ -203,15 +206,11 @@ class _OtpScreenState extends State<OtpScreen> {
                   onPressed: secondesAvantRenvoi == 0
                       ? () => setState(() => secondesAvantRenvoi = 60)
                       : null,
-                  child: Text(
-                    secondesAvantRenvoi == 0
-                        ? 'Renvoyer le code'
-                        : 'Renvoyer le code (${secondesAvantRenvoi}s)',
-                  ),
+                  child: Text(s.otpRenvoyerLeCode(secondesAvantRenvoi)),
                 ),
               ),
               const SizedBox(height: 12),
-              PrimaryButton(label: 'Valider', loading: loading, onPressed: _verifier),
+              PrimaryButton(label: s.otpValider, loading: loading, onPressed: _verifier),
             ],
           ),
         ),

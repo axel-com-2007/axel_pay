@@ -13,3 +13,4 @@ export 'shadows/app_shadows.dart';
 export 'buttons/app_button.dart';
 export 'cards/app_card.dart';
 export 'animations/app_animations.dart';
+export 'responsive/responsive_utils.dart';

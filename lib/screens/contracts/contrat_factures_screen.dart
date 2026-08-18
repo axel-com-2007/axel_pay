@@ -30,6 +30,7 @@ import '../../theme/app_theme.dart';
 import '../../widgets/animations/animations.dart';
 import '../../widgets/app_card.dart';
 import '../../widgets/status_badge.dart';
+import '../../l10n/app_strings.dart';
 import '../../shared/widgets/app_bottom_sheet.dart';
 import '../../shared/widgets/app_text_field.dart';
 import '../../design_system/buttons/app_button.dart';
@@ -115,6 +116,7 @@ class _ContratFacturesScreenState extends State<ContratFacturesScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final s = S.of(context);
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
@@ -169,7 +171,7 @@ class _ContratFacturesScreenState extends State<ContratFacturesScreen> {
                             const SizedBox(height: 16),
                             ElevatedButton(
                               onPressed: _relancer,
-                              child: const Text('Réessayer'),
+                              child: Text(s.reessayer),
                             ),
                           ],
                         ),
@@ -223,6 +225,7 @@ class _ContratFacturesScreenState extends State<ContratFacturesScreen> {
   }
 
   Widget _buildFiltres() {
+    final s = S.of(context);
     // Filtre statut uniquement : un contrat n'a qu'un seul compteur actif
     // à la fois (RG métier), donc plus de filtre par compteur ici.
     return Padding(
@@ -235,7 +238,7 @@ class _ContratFacturesScreenState extends State<ContratFacturesScreen> {
             child: Row(
               children: [
                 _FiltreChip(
-                  label: 'Tous',
+                  label: s.factContratFiltreTous,
                   selected: _statutFiltre == null,
                   onTap: () => setState(() {
                     _statutFiltre = null;
@@ -244,7 +247,7 @@ class _ContratFacturesScreenState extends State<ContratFacturesScreen> {
                 ),
                 const SizedBox(width: 8),
                 _FiltreChip(
-                  label: 'Payée',
+                  label: s.factContratFiltrePayee,
                   selected: _statutFiltre == 'Payée',
                   onTap: () => setState(() {
                     _statutFiltre = 'Payée';
@@ -261,7 +264,7 @@ class _ContratFacturesScreenState extends State<ContratFacturesScreen> {
                   // l'ancien code envoyait 'En cours' (espace), ce qui
                   // provoquait un DataError PostgreSQL non catché (500)
                   // côté ContratFacturesListView.
-                  label: 'En cours',
+                  label: s.factContratFiltreEnCours,
                   selected: _statutFiltre == 'En_cours',
                   onTap: () => setState(() {
                     _statutFiltre = 'En_cours';
@@ -270,7 +273,7 @@ class _ContratFacturesScreenState extends State<ContratFacturesScreen> {
                 ),
                 const SizedBox(width: 8),
                 _FiltreChip(
-                  label: 'Impayée',
+                  label: s.factContratFiltreImpayee,
                   selected: _statutFiltre == 'Impayée',
                   onTap: () => setState(() {
                     _statutFiltre = 'Impayée';
@@ -304,9 +307,10 @@ class _ContratFacturesScreenState extends State<ContratFacturesScreen> {
 
   void _signalerAnomalie(FactureModel facture) {
     final controller = TextEditingController();
+    final s = S.read(context);
     AppBottomSheet.show(
       context: context,
-      title: 'Signaler une anomalie — ${facture.moisFacturation}',
+      title: s.signalerAnomalieTitreAvecMois(facture.moisFacturation),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -314,11 +318,11 @@ class _ContratFacturesScreenState extends State<ContratFacturesScreen> {
           AppTextField(
             controller: controller,
             maxLines: 3,
-            hintText: 'Décrivez le problème rencontré (montant incorrect, index erroné...)',
+            hintText: s.signalerAnomalieHint,
           ),
           const SizedBox(height: 16),
           AppButton(
-            label: 'Envoyer au support',
+            label: s.envoyerAuSupport,
             onPressed: () async {
               final description = controller.text.trim();
               Navigator.pop(context);
@@ -425,6 +429,7 @@ class _FactureContratTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final s = S.of(context);
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
       child: InkWell(
@@ -460,14 +465,14 @@ class _FactureContratTile extends StatelessWidget {
                     child: TextButton.icon(
                       onPressed: onTelecharger,
                       icon: const Icon(Icons.download, size: 18),
-                      label: const Text('Reçu PDF'),
+                      label: Text(s.recuPdf),
                     ),
                   ),
                   Expanded(
                     child: TextButton.icon(
                       onPressed: onSignaler,
                       icon: const Icon(Icons.flag_outlined, size: 18),
-                      label: const Text('Anomalie'),
+                      label: Text(s.factContratAnomalie),
                     ),
                   ),
                 ],
@@ -479,7 +484,7 @@ class _FactureContratTile extends StatelessWidget {
                   child: TextButton.icon(
                     onPressed: onPayer,
                     icon: const Icon(Icons.payments_outlined, size: 18),
-                    label: const Text('Payer cette facture'),
+                    label: Text(s.payerCetteFacture),
                   ),
                 ),
               ],
@@ -496,11 +501,11 @@ class _AucuneFactureContrat extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const EmptyStateLottie(
+    final s = S.of(context);
+    return EmptyStateLottie(
       asset: LottieAssets.search,
-      title: 'Aucune facture disponible',
-      subtitle: 'Aucune facture ne correspond à ces filtres, ou ce contrat ne '
-          'compte que des compteurs prépayés (pas de facturation mensuelle).',
+      title: s.factContratAucuneFactureTitre,
+      subtitle: s.factContratAucuneFactureSousTitre,
     );
   }
 }

@@ -1,17 +1,11 @@
 // ============================================================
-// ÉCRAN DE CONNEXION
+// ÉCRAN DE CONNEXION — RESPONSIVE
 // ============================================================
-// REFONTE — reprend fidèlement la maquette "new_page_sign" :
-// carte blanche centrée, flottante, avec titre "AxelPay" en
-// turquoise, sous-titre, champs simples et bouton "Se connecter"
-// pleine largeur en turquoise. Branché sur AuthService pour un
-// vrai appel à POST /auth/login/.
-//
-// Rappel cahier des charges (5.1) : verrouillage du compte 1h après 5
-// tentatives échouées — cette règle est appliquée CÔTÉ SERVEUR
-// (LoginView) et remonte ici sous forme d'ApiPermissionException. Pas
-// de simulation locale : le compteur d'échecs vit en base, pas dans
-// l'état du widget.
+// Adaptatif sur tous les écrans :
+//   • mobile  : carte centrée pleine largeur (comportement d'origine)
+//   • tablet  : carte blanche contrainte à 480 px, centrée
+//   • desktop : layout 2 colonnes — illustration à gauche, formulaire
+//               dans une carte à droite
 // ============================================================
 
 import 'package:flutter/material.dart';
@@ -20,6 +14,8 @@ import 'package:provider/provider.dart';
 
 import '../../api/auth_service.dart';
 import '../../api/api_exception.dart';
+import '../../design_system/responsive/responsive_utils.dart';
+import '../../l10n/app_strings.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/animations/animations.dart';
 import '../../widgets/primary_button.dart';
@@ -60,26 +56,17 @@ class _LoginScreenState extends State<LoginScreen> {
         identifiant: identifiantController.text.trim(),
         motDePasse: passwordController.text,
       );
-      // Pas de Navigator.push ici : AuthGate (main.dart) observe
-      // auth.status et affiche MainShell automatiquement dès que le
-      // login réussit.
     } on ApiPermissionException catch (e) {
-      // Compte verrouillé après 5 tentatives échouées (LoginView).
       _showSnack(e.message);
       _shakeCarte.shake();
     } on ApiValidationException catch (e) {
-      // Identifiants invalides.
       _showSnack(e.firstMessage);
       _shakeCarte.shake();
     } on ApiException catch (e) {
-      // Réseau, serveur, etc.
       _showSnack(e.message);
       _shakeCarte.shake();
     } catch (e) {
-      // Filet de sécurité : erreur inattendue (ex: réponse serveur mal
-      // formée). On affiche quelque chose plutôt que de rester bloqué
-      // sans rien à l'écran.
-      _showSnack('Erreur inattendue : $e');
+      if (mounted) _showSnack(S.read(context).erreurInattendue('$e'));
       _shakeCarte.shake();
     } finally {
       if (mounted) setState(() => loading = false);
@@ -87,7 +74,8 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   void _showSnack(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
   }
 
   @override
@@ -97,148 +85,44 @@ class _LoginScreenState extends State<LoginScreen> {
         decoration: const BoxDecoration(gradient: AppColors.backgroundGradient),
         child: Stack(
           children: [
-            // Motif décoratif discret en arrière-plan (identité visuelle)
             const _NetworkPattern(),
-
             SafeArea(
-              child: Center(
-                child: SingleChildScrollView(
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 40),
-                    child: FadeSlideIn(
-                      offsetY: 24,
-                      child: ShakeWidget(
-                        controller: _shakeCarte,
-                        child: Container(
-                      padding: const EdgeInsets.fromLTRB(28, 36, 28, 32),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(28.0),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withOpacity(0.08),
-                            blurRadius: 30,
-                            offset: const Offset(0, 14),
-                          ),
-                        ],
-                      ),
-                      child: Form(
-                        key: _formKey,
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          crossAxisAlignment: CrossAxisAlignment.center,
-                          children: [
-                            // ===== Illustration Lottie + logo / marque =====
-                            Lottie.asset(
-                              LottieAssets.login,
-                              width: 140,
-                              height: 140,
-                              repeat: true,
-                            ),
-                            const Text('AxelPay', style: AppTextStyles.brand),
-                            const SizedBox(height: 10),
-                            const Text(
-                              'Gérez vos factures et recharges Eneo',
-                              style: AppTextStyles.bodyMuted,
-                              textAlign: TextAlign.center,
-                            ),
-                            const SizedBox(height: 30),
-
-                            // ===== Identifiant =====
-                            AppTextField(
-                              label: 'Adresse e-mail ou numéro de téléphone :',
-                              controller: identifiantController,
-                              keyboardType: TextInputType.emailAddress,
-                              hintText: 'ex: axel.mai@example.com',
-                              validator: (value) {
-                                if (value == null || value.trim().isEmpty) {
-                                  return 'Ce champ est obligatoire';
-                                }
-                                return null;
-                              },
-                            ),
-                            const SizedBox(height: 22),
-
-                            // ===== Mot de passe =====
-                            AppTextField(
-                              label: 'Mot de passe',
-                              controller: passwordController,
-                              obscureText: obscurePassword,
-                              hintText: 'Entrez votre mot de passe',
-                              suffixIcon: IconButton(
-                                icon: Icon(
-                                  obscurePassword ? Icons.visibility_off : Icons.visibility,
-                                  color: Colors.black45,
-                                ),
-                                onPressed: () =>
-                                    setState(() => obscurePassword = !obscurePassword),
-                              ),
-                              validator: (value) {
-                                if (value == null || value.isEmpty) {
-                                  return 'Mot de passe requis';
-                                }
-                                return null;
-                              },
-                            ),
-                            const SizedBox(height: 26),
-
-                            PrimaryButton(
-                              label: 'Se connecter',
-                              loading: loading,
-                              onPressed: _seConnecter,
-                            ),
-                            const SizedBox(height: 18),
-
-                            GestureDetector(
-                              onTap: () async {
-                                final identifiant = identifiantController.text.trim();
-                                if (identifiant.isEmpty) {
-                                  _showSnack('Renseigne ton e-mail ou ton téléphone d\'abord.');
-                                  return;
-                                }
-                                try {
-                                  await context
-                                      .read<AuthService>()
-                                      .requestPasswordReset(identifiant: identifiant);
-                                } on ApiException {
-                                  // Réponse volontairement neutre côté backend :
-                                  // on affiche le même message même en cas d'erreur.
-                                }
-                                if (!mounted) return;
-                                _showSnack(
-                                    'Si ce compte existe, des instructions ont été envoyées.');
-                              },
-                              child: const Text(
-                                'Mot de passe oublié ?',
-                                style: TextStyle(
-                                  fontSize: 13,
-                                  color: AppColors.primary,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ),
-                            const SizedBox(height: 14),
-
-                            GestureDetector(
-                              onTap: () => Navigator.of(context).push(
-                                MaterialPageRoute(builder: (_) => const RegisterScreen()),
-                              ),
-                              child: const Text(
-                                'Créer un compte',
-                                style: TextStyle(
-                                  fontSize: 13,
-                                  color: AppColors.textSecondary,
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                      ),
-                    ),
-                  ),
+              child: ResponsiveLayout(
+                mobile: _MobileLogin(
+                  formKey: _formKey,
+                  identifiantController: identifiantController,
+                  passwordController: passwordController,
+                  obscurePassword: obscurePassword,
+                  loading: loading,
+                  shakeCarte: _shakeCarte,
+                  onTogglePassword: () =>
+                      setState(() => obscurePassword = !obscurePassword),
+                  onLogin: _seConnecter,
+                  onShowSnack: _showSnack,
+                ),
+                tablet: _TabletLogin(
+                  formKey: _formKey,
+                  identifiantController: identifiantController,
+                  passwordController: passwordController,
+                  obscurePassword: obscurePassword,
+                  loading: loading,
+                  shakeCarte: _shakeCarte,
+                  onTogglePassword: () =>
+                      setState(() => obscurePassword = !obscurePassword),
+                  onLogin: _seConnecter,
+                  onShowSnack: _showSnack,
+                ),
+                desktop: _DesktopLogin(
+                  formKey: _formKey,
+                  identifiantController: identifiantController,
+                  passwordController: passwordController,
+                  obscurePassword: obscurePassword,
+                  loading: loading,
+                  shakeCarte: _shakeCarte,
+                  onTogglePassword: () =>
+                      setState(() => obscurePassword = !obscurePassword),
+                  onLogin: _seConnecter,
+                  onShowSnack: _showSnack,
                 ),
               ),
             ),
@@ -249,21 +133,485 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 }
 
-/// Motif géométrique discret (traits + points) en arrière-plan, très
-/// proche de la texture "réseau" visible en fond des maquettes
-/// fournies. Volontairement léger (faible opacité) pour ne pas nuire
-/// à la lisibilité du formulaire.
+// ────────────────────────────────────────────────────────────
+// FORMULAIRE PARTAGÉ
+// ────────────────────────────────────────────────────────────
+class _LoginForm extends StatelessWidget {
+  const _LoginForm({
+    required this.formKey,
+    required this.identifiantController,
+    required this.passwordController,
+    required this.obscurePassword,
+    required this.loading,
+    required this.shakeCarte,
+    required this.onTogglePassword,
+    required this.onLogin,
+    required this.onShowSnack,
+  });
+
+  final GlobalKey<FormState> formKey;
+  final TextEditingController identifiantController;
+  final TextEditingController passwordController;
+  final bool obscurePassword;
+  final bool loading;
+  final ShakeController shakeCarte;
+  final VoidCallback onTogglePassword;
+  final VoidCallback onLogin;
+  final void Function(String) onShowSnack;
+
+  @override
+  Widget build(BuildContext context) {
+    final s = S.of(context);
+    final gap = AppResponsiveSpacing.fieldGap(context);
+
+    return Form(
+      key: formKey,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          // Logo Lottie + titre
+          Lottie.asset(
+            LottieAssets.login,
+            width: context.isDesktop ? 120 : 140,
+            height: context.isDesktop ? 120 : 140,
+            repeat: true,
+          ),
+          Text(
+            'AxelPay',
+            style: AppResponsiveText.brand(context)
+                .copyWith(color: AppColors.primaryBlue),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            s.authTagline,
+            style: AppTextStyles.bodyMuted,
+            textAlign: TextAlign.center,
+          ),
+          SizedBox(height: gap + 8),
+
+          // Identifiant
+          AppTextField(
+            label: s.loginIdentifiantLabel,
+            controller: identifiantController,
+            keyboardType: TextInputType.emailAddress,
+            hintText: s.loginIdentifiantHint,
+            validator: (v) {
+              if (v == null || v.trim().isEmpty) return s.authChampObligatoire;
+              return null;
+            },
+          ),
+          SizedBox(height: gap),
+
+          // Mot de passe
+          AppTextField(
+            label: s.loginMotDePasseLabel,
+            controller: passwordController,
+            obscureText: obscurePassword,
+            hintText: s.loginMotDePasseHint,
+            suffixIcon: IconButton(
+              icon: Icon(
+                obscurePassword ? Icons.visibility_off : Icons.visibility,
+                color: Colors.black45,
+              ),
+              onPressed: onTogglePassword,
+            ),
+            validator: (v) {
+              if (v == null || v.isEmpty) return s.loginMotDePasseRequis;
+              return null;
+            },
+          ),
+          SizedBox(height: gap + 4),
+
+          PrimaryButton(
+            label: s.loginBouton,
+            loading: loading,
+            onPressed: onLogin,
+          ),
+          const SizedBox(height: 16),
+
+          // Mot de passe oublié
+          GestureDetector(
+            onTap: () async {
+              final identifiant = identifiantController.text.trim();
+              if (identifiant.isEmpty) {
+                onShowSnack(S.read(context).loginRenseigneIdentifiantDabord);
+                return;
+              }
+              try {
+                await context
+                    .read<AuthService>()
+                    .requestPasswordReset(identifiant: identifiant);
+              } on ApiException {
+                // Réponse neutre côté backend.
+              }
+              if (context.mounted) {
+                onShowSnack(S.read(context).loginResetInstructionsEnvoyees);
+              }
+            },
+            child: Text(
+              s.loginMotDePasseOublie,
+              style: TextStyle(
+                fontSize: AppResponsiveText.scale(context, 13),
+                color: AppColors.primary,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // Créer un compte
+          GestureDetector(
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const RegisterScreen()),
+            ),
+            child: Text(
+              s.loginCreerUnCompte,
+              style: TextStyle(
+                fontSize: AppResponsiveText.scale(context, 13),
+                color: AppColors.textSecondary,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ────────────────────────────────────────────────────────────
+// MOBILE — carte centrée pleine largeur (comportement d'origine)
+// ────────────────────────────────────────────────────────────
+class _MobileLogin extends StatelessWidget {
+  const _MobileLogin({
+    required this.formKey,
+    required this.identifiantController,
+    required this.passwordController,
+    required this.obscurePassword,
+    required this.loading,
+    required this.shakeCarte,
+    required this.onTogglePassword,
+    required this.onLogin,
+    required this.onShowSnack,
+  });
+
+  final GlobalKey<FormState> formKey;
+  final TextEditingController identifiantController;
+  final TextEditingController passwordController;
+  final bool obscurePassword;
+  final bool loading;
+  final ShakeController shakeCarte;
+  final VoidCallback onTogglePassword;
+  final VoidCallback onLogin;
+  final void Function(String) onShowSnack;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: SingleChildScrollView(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 40),
+          child: FadeSlideIn(
+            offsetY: 24,
+            child: ShakeWidget(
+              controller: shakeCarte,
+              child: Container(
+                padding: const EdgeInsets.fromLTRB(28, 36, 28, 32),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(28),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.08),
+                      blurRadius: 30,
+                      offset: const Offset(0, 14),
+                    ),
+                  ],
+                ),
+                child: _LoginForm(
+                  formKey: formKey,
+                  identifiantController: identifiantController,
+                  passwordController: passwordController,
+                  obscurePassword: obscurePassword,
+                  loading: loading,
+                  shakeCarte: shakeCarte,
+                  onTogglePassword: onTogglePassword,
+                  onLogin: onLogin,
+                  onShowSnack: onShowSnack,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ────────────────────────────────────────────────────────────
+// TABLET — carte contrainte à 480 px, centrée
+// ────────────────────────────────────────────────────────────
+class _TabletLogin extends StatelessWidget {
+  const _TabletLogin({
+    required this.formKey,
+    required this.identifiantController,
+    required this.passwordController,
+    required this.obscurePassword,
+    required this.loading,
+    required this.shakeCarte,
+    required this.onTogglePassword,
+    required this.onLogin,
+    required this.onShowSnack,
+  });
+
+  final GlobalKey<FormState> formKey;
+  final TextEditingController identifiantController;
+  final TextEditingController passwordController;
+  final bool obscurePassword;
+  final bool loading;
+  final ShakeController shakeCarte;
+  final VoidCallback onTogglePassword;
+  final VoidCallback onLogin;
+  final void Function(String) onShowSnack;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.symmetric(horizontal: 48, vertical: 48),
+        child: FadeSlideIn(
+          offsetY: 24,
+          child: ShakeWidget(
+            controller: shakeCarte,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(
+                  maxWidth: AppBreakpoints.maxFormWidth),
+              child: Container(
+                padding: const EdgeInsets.fromLTRB(36, 44, 36, 40),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(32),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.08),
+                      blurRadius: 40,
+                      offset: const Offset(0, 18),
+                    ),
+                  ],
+                ),
+                child: _LoginForm(
+                  formKey: formKey,
+                  identifiantController: identifiantController,
+                  passwordController: passwordController,
+                  obscurePassword: obscurePassword,
+                  loading: loading,
+                  shakeCarte: shakeCarte,
+                  onTogglePassword: onTogglePassword,
+                  onLogin: onLogin,
+                  onShowSnack: onShowSnack,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ────────────────────────────────────────────────────────────
+// DESKTOP — 2 colonnes : branding gauche | formulaire droite
+// ────────────────────────────────────────────────────────────
+class _DesktopLogin extends StatelessWidget {
+  const _DesktopLogin({
+    required this.formKey,
+    required this.identifiantController,
+    required this.passwordController,
+    required this.obscurePassword,
+    required this.loading,
+    required this.shakeCarte,
+    required this.onTogglePassword,
+    required this.onLogin,
+    required this.onShowSnack,
+  });
+
+  final GlobalKey<FormState> formKey;
+  final TextEditingController identifiantController;
+  final TextEditingController passwordController;
+  final bool obscurePassword;
+  final bool loading;
+  final ShakeController shakeCarte;
+  final VoidCallback onTogglePassword;
+  final VoidCallback onLogin;
+  final void Function(String) onShowSnack;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        // ── Colonne branding ──────────────────────────────────
+        Expanded(
+          child: Container(
+            decoration: const BoxDecoration(
+              gradient: AppColors.primaryGradient,
+            ),
+            child: const _BrandingPanel(),
+          ),
+        ),
+
+        // ── Colonne formulaire ────────────────────────────────
+        Expanded(
+          child: Center(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(48),
+              child: FadeSlideIn(
+                offsetY: 24,
+                child: ShakeWidget(
+                  controller: shakeCarte,
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(
+                        maxWidth: AppBreakpoints.maxFormWidth),
+                    child: Container(
+                      padding: const EdgeInsets.fromLTRB(40, 48, 40, 44),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(32),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.07),
+                            blurRadius: 40,
+                            offset: const Offset(0, 16),
+                          ),
+                        ],
+                      ),
+                      child: _LoginForm(
+                        formKey: formKey,
+                        identifiantController: identifiantController,
+                        passwordController: passwordController,
+                        obscurePassword: obscurePassword,
+                        loading: loading,
+                        shakeCarte: shakeCarte,
+                        onTogglePassword: onTogglePassword,
+                        onLogin: onLogin,
+                        onShowSnack: onShowSnack,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// ────────────────────────────────────────────────────────────
+// Panneau de branding (desktop gauche)
+// ────────────────────────────────────────────────────────────
+class _BrandingPanel extends StatelessWidget {
+  const _BrandingPanel();
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(48),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const CircleAvatar(
+              radius: 36,
+              backgroundColor: Colors.white24,
+              child: Icon(Icons.bolt, color: Colors.white, size: 40),
+            ),
+            const SizedBox(height: 32),
+            const Text(
+              'AxelPay',
+              style: TextStyle(
+                fontSize: 48,
+                fontWeight: FontWeight.w900,
+                color: Colors.white,
+                letterSpacing: -0.5,
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'Gérez vos factures d électricité\nen toute simplicité.',
+              style: TextStyle(
+                fontSize: 20,
+                color: Colors.white.withOpacity(0.85),
+                height: 1.5,
+              ),
+            ),
+            const SizedBox(height: 48),
+            _FeatureRow(
+              icon: Icons.flash_on,
+              text: 'Paiement en quelques secondes',
+            ),
+            const SizedBox(height: 16),
+            _FeatureRow(
+              icon: Icons.notifications_active_outlined,
+              text: 'Alertes avant coupure',
+            ),
+            const SizedBox(height: 16),
+            _FeatureRow(
+              icon: Icons.history,
+              text: 'Historique complet de vos contrats',
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _FeatureRow extends StatelessWidget {
+  const _FeatureRow({required this.icon, required this.text});
+  final IconData icon;
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Container(
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: Colors.white.withOpacity(0.2),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Icon(icon, color: Colors.white, size: 20),
+        ),
+        const SizedBox(width: 14),
+        Expanded(
+          child: Text(
+            text,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 15,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// ────────────────────────────────────────────────────────────
+// Motif géométrique de fond (identique à l'original)
+// ────────────────────────────────────────────────────────────
 class _NetworkPattern extends StatelessWidget {
   const _NetworkPattern();
 
   @override
   Widget build(BuildContext context) {
     return Positioned.fill(
-      child: IgnorePointer(
-        child: CustomPaint(
-          painter: _NetworkPainter(),
-        ),
-      ),
+      child: IgnorePointer(child: CustomPaint(painter: _NetworkPainter())),
     );
   }
 }

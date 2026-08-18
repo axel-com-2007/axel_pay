@@ -50,6 +50,11 @@ import string
 from datetime import timedelta
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
+from django.core.mail import send_mail, EmailMultiAlternatives
+from django.template.loader import render_to_string
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+import smtplib
 
 
 from django.conf import settings
@@ -63,6 +68,7 @@ from django.utils import timezone
 from rest_framework import generics, permissions, status
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from .crypto import encrypt_token
@@ -71,6 +77,9 @@ from .services import notchpay
 from .services.notchpay import NotchPayError
 from .services.orange_sms import OrangeSmsError, envoyer_sms
 from .services import ai_support
+from .services import deepl_translate
+from .services.deepl_translate import DeepLError
+from .services.pdf_reports import generer_pdf_export_donnees, generer_pdf_ticket
 from .models import (
     Adresses,
     AuditLogs,
@@ -2147,13 +2156,85 @@ class RemboursementView(APIView):
 # opérations exposées côté client (consultation, gestion des devices).
 
 class NotificationHistoriqueView(generics.ListAPIView):
-    """Historique des notifications reçues par l'utilisateur connecté."""
+    """
+    Historique des notifications reçues par l'utilisateur connecté.
+
+    GET /api/notifications/
+        Retourne la liste paginée des notifications (toutes, ou filtrées par
+        ?non_lues=true). Partagé entre le dashboard ET l'écran Paramètres :
+        les deux écrans appellent ce même endpoint.
+
+    PATCH /api/notifications/<id_notification>/lue/
+        Marque une notification comme lue (date_lecture = now()).
+        Appel depuis le dashboard ET depuis l'écran Paramètres → synchronisation
+        automatique : dès qu'un écran marque une notif comme lue, le badge
+        de l'autre écran se met à jour à la prochaine interrogation.
+    """
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = NotificationsSerializer
     pagination_class = StandardResultsSetPagination
 
     def get_queryset(self):
-        return Notifications.objects.filter(id_user=self.request.user).order_by("-date_envoi")
+        qs = Notifications.objects.filter(id_user=self.request.user).order_by("-date_envoi")
+        non_lues = self.request.query_params.get("non_lues")
+        if non_lues and non_lues.lower() in ("true", "1"):
+            qs = qs.filter(date_lecture__isnull=True)
+        return qs
+
+
+class NotificationMarquerLueView(APIView):
+    """
+    PATCH /api/notifications/<id_notification>/lue/
+    Marque une notification comme lue. Utilisé indifféremment depuis le
+    dashboard et depuis l'écran Paramètres — la donnée est unique en base,
+    donc les deux vues restent synchronisées sans état supplémentaire.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def patch(self, request, id_notification):
+        notif = get_object_or_404(
+            Notifications,
+            pk=id_notification,
+            id_user=request.user,
+        )
+        if notif.date_lecture is None:
+            notif.date_lecture = timezone.now()
+            notif.save(update_fields=["date_lecture"])
+        return Response(NotificationsSerializer(notif).data)
+
+
+class NotificationNonLuesCountView(APIView):
+    """
+    GET /api/notifications/non-lues/count/
+    Retourne le nombre de notifications non lues de l'utilisateur connecté.
+    Appelé par le dashboard pour afficher le badge, et par l'écran Paramètres
+    pour afficher le même badge — source unique de vérité.
+    Réponse : {"count": <int>}
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        count = Notifications.objects.filter(
+            id_user=request.user,
+            date_lecture__isnull=True,
+        ).count()
+        return Response({"count": count})
+
+
+class NotificationMarquerToutesLuesView(APIView):
+    """
+    POST /api/notifications/tout-lire/
+    Marque TOUTES les notifications non lues de l'utilisateur comme lues.
+    Accessible depuis le dashboard ET depuis l'écran Paramètres.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        updated = Notifications.objects.filter(
+            id_user=request.user,
+            date_lecture__isnull=True,
+        ).update(date_lecture=timezone.now())
+        return Response({"marquees_lues": updated})
 
 
 class DeviceRegisterView(generics.CreateAPIView):
@@ -2479,13 +2560,22 @@ class ExportDataView(APIView):
     (CDC 11.3 — cadre légal camerounais n°2010/012, sous contrôle ANTIC).
     Exporte le profil ET les données associées consultables par l'utilisateur
     (compteurs, factures, transactions, notifications) dans un format
-    structuré exploitable (JSON).
+    structuré exploitable (JSON), ET envoie par e-mail à l'utilisateur un
+    PDF récapitulatif de son compte + de TOUTES ses factures.
     """
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
         user = request.user
         ids_compteurs = list(get_delegated_compteur_ids(user))
+        date_export = timezone.now()
+
+        contrats_qs = Contrats.objects.filter(id_user=user).annotate(
+            nombre_compteurs=Count('compteurs')
+        )
+        compteurs_qs = Compteurs.objects.filter(id_compteur__in=ids_compteurs)
+        factures_qs = FacturesPostpayees.objects.filter(id_compteur_id__in=ids_compteurs)
+        transactions_qs = TransactionsPrepayees.objects.filter(id_compteur_id__in=ids_compteurs)
 
         # `context={"masquer": False}` : le masquage partiel (§11.2) protège
         # l'affichage courant contre un tiers qui intercepterait la réponse,
@@ -2495,21 +2585,13 @@ class ExportDataView(APIView):
         # ici viderait ce droit de sa substance.
         export = {
             "profil": UsersSerializer(user, context={"masquer": False}).data,
-            "contrats": ContratsSerializer(
-                Contrats.objects.filter(id_user=user).annotate(
-                    nombre_compteurs=Count('compteurs')
-                ),
-                many=True,
-            ).data,
+            "contrats": ContratsSerializer(contrats_qs, many=True).data,
             "compteurs": CompteursSerializer(
-                Compteurs.objects.filter(id_compteur__in=ids_compteurs), many=True,
-                context={"masquer": False},
+                compteurs_qs, many=True, context={"masquer": False},
             ).data,
-            "factures": FacturesPostpayeesSerializer(
-                FacturesPostpayees.objects.filter(id_compteur_id__in=ids_compteurs), many=True
-            ).data,
+            "factures": FacturesPostpayeesSerializer(factures_qs, many=True).data,
             "transactions_prepayees": TransactionsPrepayeesSerializer(
-                TransactionsPrepayees.objects.filter(id_compteur_id__in=ids_compteurs), many=True
+                transactions_qs, many=True
             ).data,
             "paiements": PaiementsSerializer(
                 Paiements.objects.filter(id_user=user), many=True
@@ -2520,8 +2602,61 @@ class ExportDataView(APIView):
             "consentements": UserConsentLogsSerializer(
                 UserConsentLogs.objects.filter(id_user=user), many=True
             ).data,
-            "date_export": timezone.now(),
+            "date_export": date_export,
         }
+
+        # ── PDF récapitulatif + envoi par e-mail ────────────────────────
+        # Reconstruit les listes en mémoire une seule fois (déjà évaluées
+        # ci-dessus pour la sérialisation JSON) afin d'éviter de refaire
+        # les mêmes requêtes SQL pour le PDF.
+        email_envoye = False
+        erreur_envoi = None
+        try:
+            pdf_bytes = generer_pdf_export_donnees(
+                user=user,
+                contrats=list(contrats_qs),
+                compteurs=list(compteurs_qs),
+                factures=list(factures_qs),
+                transactions_prepayees=list(transactions_qs),
+                date_export=date_export,
+            )
+            msg = EmailMultiAlternatives(
+                subject=f"📄 [ENEO] Export de vos données personnelles — {date_export:%d/%m/%Y}",
+                body=(
+                    f"Bonjour {user.prenom},\n\n"
+                    "Veuillez trouver ci-joint le récapitulatif PDF de votre compte AxelPay "
+                    "et de l'ensemble de vos factures, conformément à votre demande d'export "
+                    "de données personnelles.\n\n"
+                    "L'équipe AxelPay / ENEO"
+                ),
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                to=[user.email],
+            )
+            msg.attach(
+                f"export_donnees_axelpay_{date_export:%Y%m%d}.pdf",
+                pdf_bytes,
+                "application/pdf",
+            )
+            msg.send(fail_silently=False)
+            email_envoye = True
+        except Exception as exc:
+            erreur_envoi = str(exc)
+            logger.error(
+                "ExportDataView: échec de l'envoi du PDF d'export (user=%s): %s",
+                user.pk, exc,
+            )
+
+        export["email_envoye"] = email_envoye
+        export["destinataire"] = user.email if email_envoye else None
+        export["message"] = (
+            f"Le récapitulatif PDF de vos données et de vos factures a été envoyé à {user.email}."
+            if email_envoye
+            else "L'envoi de l'e-mail a échoué. Vos données restent disponibles ci-dessous ; "
+                 "réessayez plus tard ou contactez le support."
+        )
+        if erreur_envoi and settings.DEBUG:
+            export["erreur_envoi_debug"] = erreur_envoi
+
         return Response(export)
 
 
@@ -2771,3 +2906,405 @@ class SupportChatView(APIView):
             )
  
         return Response({"reponse": reponse, "escalade_recommandee": escalade})    
+
+# ==============================================================================
+# MODULE 11 — TICKETS DE SUPPORT (écran Paramètres → "Ouvrir un ticket")
+# ==============================================================================
+# Un ticket est un litige formel accompagné d'un e-mail ultra-professionnel
+# envoyé via le SMTP configuré dans settings.py (EMAIL_HOST, EMAIL_PORT,
+# EMAIL_HOST_USER, EMAIL_HOST_PASSWORD, DEFAULT_FROM_EMAIL).
+#
+# Le mail est envoyé :
+#   • AU CLIENT     : accusé de réception avec numéro de ticket et récapitulatif.
+#   • À L'ÉQUIPE SUPPORT (settings.SUPPORT_EMAIL) : fiche complète du ticket
+#     avec le contexte du dossier client pour un traitement immédiat.
+#
+# ⚙️  Variables settings.py requises :
+#     EMAIL_HOST, EMAIL_PORT, EMAIL_HOST_USER, EMAIL_HOST_PASSWORD,
+#     DEFAULT_FROM_EMAIL  (déjà configurés via le SMTP existant)
+#     SUPPORT_EMAIL       (adresse de l'équipe support interne, ex: support@eneo.cm)
+# ==============================================================================
+
+
+def _generer_html_ticket_client(ticket_id, user, sujet, description, categorie, priorite, date_ouverture):
+    """Corps HTML de l'accusé de réception envoyé au client."""
+    date_str = date_ouverture.strftime("%d/%m/%Y à %H:%M")
+    sla = {
+        "Urgente": "Réponse sous <strong>4 heures ouvrables</strong>.",
+        "Haute":   "Réponse sous <strong>24 heures ouvrables</strong>.",
+        "Normale": "Réponse sous <strong>48 heures ouvrables</strong>.",
+    }.get(priorite, "Réponse dans les meilleurs délais.")
+    return f"""<!DOCTYPE html>
+<html lang="fr"><head><meta charset="UTF-8">
+<title>Ticket {ticket_id} — ENEO Support</title>
+<style>
+body{{margin:0;padding:0;background:#f0f2f5;font-family:'Segoe UI',Arial,sans-serif;color:#212121}}
+.w{{max-width:640px;margin:36px auto;background:#fff;border-radius:10px;
+    box-shadow:0 4px 20px rgba(0,0,0,.10);overflow:hidden}}
+.hd{{background:linear-gradient(135deg,#1a237e 0%,#283593 100%);padding:32px 40px;text-align:center}}
+.hd h1{{color:#fff;font-size:22px;margin:0 0 6px;letter-spacing:.4px}}
+.hd p{{color:#c5cae9;font-size:13px;margin:0}}
+.bd{{padding:36px 40px}}
+.tkt{{background:#e8eaf6;border-left:5px solid #1a237e;border-radius:6px;padding:20px 24px;margin:24px 0}}
+.tkt .num{{font-size:26px;font-weight:800;color:#1a237e;letter-spacing:1.5px}}
+.tkt .lbl{{font-size:11px;color:#5c6bc0;text-transform:uppercase;letter-spacing:.7px;margin-bottom:4px}}
+.grid{{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:24px 0}}
+.cell{{background:#f8f9fa;border-radius:7px;padding:14px 18px}}
+.cell .lbl{{font-size:11px;color:#757575;text-transform:uppercase;letter-spacing:.6px;margin-bottom:5px}}
+.cell .val{{font-size:14px;font-weight:700;color:#212121}}
+.desc-box{{background:#f8f9fa;border-radius:7px;padding:18px 20px;margin:24px 0}}
+.desc-box .lbl{{font-size:11px;color:#757575;text-transform:uppercase;letter-spacing:.6px;margin-bottom:8px}}
+.desc-box .txt{{font-size:14px;color:#424242;line-height:1.7;white-space:pre-wrap}}
+.sla{{background:#e3f2fd;border-radius:7px;padding:16px 20px;margin:24px 0;font-size:13px;color:#1565c0}}
+.badge{{display:inline-block;padding:3px 12px;border-radius:20px;font-size:12px;font-weight:700;color:#fff}}
+.bg-N{{background:#388e3c}}.bg-H{{background:#e65100}}.bg-U{{background:#c62828}}
+.ft{{background:#f4f6f9;padding:22px 40px;text-align:center;border-top:1px solid #e0e0e0}}
+.ft p{{margin:0;font-size:12px;color:#9e9e9e;line-height:1.7}}
+.ft a{{color:#1a237e;text-decoration:none}}
+</style></head><body>
+<div class="w">
+  <div class="hd">
+    <h1>⚡ ENEO — Confirmation de ticket</h1>
+    <p>Votre demande a bien été enregistrée</p>
+  </div>
+  <div class="bd">
+    <p>Bonjour <strong>{user.prenom} {user.nom}</strong>,</p>
+    <p style="font-size:14px;color:#424242;line-height:1.6">
+      Nous avons bien reçu votre demande de support. Un agent qualifié prendra en charge
+      votre dossier dans les meilleurs délais. Conservez ce numéro de ticket pour tout suivi.
+    </p>
+    <div class="tkt">
+      <div class="lbl">Numéro de ticket</div>
+      <div class="num">{ticket_id}</div>
+      <div style="font-size:12px;color:#5c6bc0;margin-top:6px">Ouvert le {date_str}</div>
+    </div>
+    <div class="grid">
+      <div class="cell"><div class="lbl">Catégorie</div><div class="val">{categorie}</div></div>
+      <div class="cell"><div class="lbl">Priorité</div>
+        <div class="val"><span class="badge bg-{priorite[0]}">{priorite}</span></div></div>
+    </div>
+    <div class="cell" style="margin:0 0 24px;padding:14px 18px;background:#f8f9fa;border-radius:7px">
+      <div class="lbl" style="font-size:11px;color:#757575;text-transform:uppercase;letter-spacing:.6px;margin-bottom:5px">Objet</div>
+      <div class="val" style="font-size:14px;font-weight:700;color:#212121">{sujet}</div>
+    </div>
+    <div class="desc-box">
+      <div class="lbl">Votre description</div>
+      <div class="txt">{description}</div>
+    </div>
+    <div class="sla">⏱ <strong>Délai de traitement :</strong> {sla}</div>
+    <p style="font-size:13px;color:#616161;line-height:1.6">
+      Pour toute question ou précision, répondez à cet e-mail en mentionnant le numéro
+      <strong>{ticket_id}</strong>, ou utilisez le chat de l'application.
+    </p>
+  </div>
+  <div class="ft">
+    <p>© 2024 ENEO Cameroun — <a href="https://eneo.cm">eneo.cm</a><br>
+    Cet e-mail a été généré automatiquement. Ne pas répondre si votre problème est résolu.</p>
+  </div>
+</div></body></html>"""
+
+
+def _generer_html_ticket_support(ticket_id, user, sujet, description, categorie, priorite,
+                                  date_ouverture, contexte_dossier):
+    """Corps HTML de l'e-mail interne envoyé à l'équipe support (dossier complet)."""
+    date_str = date_ouverture.strftime("%d/%m/%Y à %H:%M")
+    coul = {"Urgente": "#c62828", "Haute": "#e65100", "Normale": "#2e7d32"}.get(priorite, "#424242")
+    contrats_html = "".join(
+        f"<li>Contrat <strong>{c['numero']}</strong> — statut&nbsp;: {c['statut']}</li>"
+        for c in (contexte_dossier.get("contrats") or [])
+    ) or "<li style='color:#9e9e9e'>Aucun contrat rattaché</li>"
+    litiges_html = "".join(
+        f"<li>[{l['id']}] Niveau {l['niveau']} / {l['statut']} — {l['description'][:150]}</li>"
+        for l in (contexte_dossier.get("litiges_ouverts") or [])
+    ) or "<li style='color:#9e9e9e'>Aucun litige ouvert</li>"
+
+    return f"""<!DOCTYPE html>
+<html lang="fr"><head><meta charset="UTF-8">
+<title>🎫 Ticket {ticket_id} — Support Interne</title>
+<style>
+body{{margin:0;padding:0;background:#f0f2f5;font-family:'Segoe UI',Arial,sans-serif;color:#212121}}
+.w{{max-width:700px;margin:32px auto;background:#fff;border-radius:10px;
+    box-shadow:0 4px 20px rgba(0,0,0,.12);overflow:hidden}}
+.hd{{background:{coul};padding:24px 36px}}
+.hd h1{{color:#fff;margin:0;font-size:20px}}
+.hd .sub{{color:rgba(255,255,255,.75);font-size:13px;margin-top:4px}}
+.sec{{padding:22px 36px;border-bottom:1px solid #f0f0f0}}
+.sec h2{{font-size:12px;text-transform:uppercase;letter-spacing:.9px;color:#757575;margin:0 0 16px}}
+.kv{{display:flex;gap:8px;margin-bottom:10px;align-items:flex-start}}
+.kv .k{{font-size:13px;color:#616161;min-width:180px;flex-shrink:0}}
+.kv .v{{font-size:13px;color:#212121;font-weight:600}}
+.badge{{display:inline-block;padding:3px 12px;border-radius:20px;font-size:12px;
+        font-weight:700;color:#fff;background:{coul}}}
+.desc{{background:#f8f9fa;border-radius:6px;padding:16px;font-size:13px;
+       color:#424242;line-height:1.7;white-space:pre-wrap}}
+ul{{margin:0;padding-left:20px;font-size:13px;color:#424242;line-height:1.9}}
+.ft{{padding:14px 36px;background:#f8f9fa;font-size:11px;color:#9e9e9e;
+     border-top:1px solid #e0e0e0}}
+</style></head><body>
+<div class="w">
+  <div class="hd">
+    <h1>🎫 Nouveau ticket — {ticket_id}</h1>
+    <div class="sub">Reçu le {date_str} · Priorité : {priorite} · Catégorie : {categorie}</div>
+  </div>
+  <div class="sec">
+    <h2>Identification</h2>
+    <div class="kv"><span class="k">Numéro de ticket</span><span class="v">{ticket_id}</span></div>
+    <div class="kv"><span class="k">Date d'ouverture</span><span class="v">{date_str}</span></div>
+    <div class="kv"><span class="k">Catégorie</span><span class="v">{categorie}</span></div>
+    <div class="kv"><span class="k">Priorité</span><span class="v"><span class="badge">{priorite}</span></span></div>
+    <div class="kv"><span class="k">Objet</span><span class="v">{sujet}</span></div>
+  </div>
+  <div class="sec">
+    <h2>Client</h2>
+    <div class="kv"><span class="k">Nom complet</span><span class="v">{user.prenom} {user.nom}</span></div>
+    <div class="kv"><span class="k">E-mail</span><span class="v">{user.email}</span></div>
+    <div class="kv"><span class="k">Téléphone</span><span class="v">{user.telephone}</span></div>
+    <div class="kv"><span class="k">ID utilisateur</span><span class="v">{user.id_user}</span></div>
+    <div class="kv"><span class="k">Factures impayées</span>
+      <span class="v">{contexte_dossier.get('nombre_factures_impayees', 0)} ticket(s) 
+      — {contexte_dossier.get('total_impaye_fcfa', 0):.0f} FCFA</span></div>
+  </div>
+  <div class="sec">
+    <h2>Contrats du client</h2>
+    <ul>{contrats_html}</ul>
+  </div>
+  <div class="sec">
+    <h2>Litiges en cours</h2>
+    <ul>{litiges_html}</ul>
+  </div>
+  <div class="sec">
+    <h2>Description du problème</h2>
+    <div class="desc">{description}</div>
+  </div>
+  <div class="ft">
+    Ticket généré automatiquement · Répondre à {user.email} · Ne pas transférer hors de l'équipe support
+  </div>
+</div></body></html>"""
+
+
+class OuvrirTicketView(APIView):
+    """
+    POST /api/support/tickets/ouvrir/
+
+    Ouvre un ticket de support formel et envoie deux e-mails HTML professionnels :
+      1. AU CLIENT     : accusé de réception (numéro de ticket + récapitulatif).
+      2. À L'ÉQUIPE SUPPORT (settings.SUPPORT_EMAIL) : fiche complète avec
+         le dossier du client (contrats, litiges, factures impayées).
+
+    Payload attendu :
+      {
+        "sujet":       str  (obligatoire, max 200 chars),
+        "description": str  (obligatoire, min 20 chars),
+        "categorie":   str  (optionnel — Facturation|Recharge|Technique|Paiement|Autre),
+        "priorite":    str  (optionnel — Normale|Haute|Urgente),
+        "id_compteur": int  (optionnel — si le problème concerne un compteur précis)
+      }
+
+    Réponse 201 :
+      {
+        "ticket_id":           "TKT-XXXXXXXXXXXXXXXX",
+        "statut":              "Ouvert",
+        "message":             str,
+        "email_client_envoye": bool,
+        "email_support_envoye": bool
+      }
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    CATEGORIES_VALIDES = {"Facturation", "Recharge", "Technique", "Paiement", "Autre"}
+    PRIORITES_VALIDES  = {"Normale", "Haute", "Urgente"}
+
+    def post(self, request):
+        user = request.user
+
+        # ── Validation ─────────────────────────────────────────────────────────
+        sujet       = (request.data.get("sujet") or "").strip()
+        description = (request.data.get("description") or "").strip()
+        categorie   = (request.data.get("categorie") or "Autre").strip()
+        priorite    = (request.data.get("priorite")  or "Normale").strip()
+        id_compteur = request.data.get("id_compteur")
+
+        erreurs = {}
+        if not sujet:
+            erreurs["sujet"] = "Ce champ est obligatoire."
+        elif len(sujet) > 200:
+            erreurs["sujet"] = "Maximum 200 caractères."
+        if not description:
+            erreurs["description"] = "Ce champ est obligatoire."
+        elif len(description) < 20:
+            erreurs["description"] = "Minimum 20 caractères pour une description utile."
+        if categorie not in self.CATEGORIES_VALIDES:
+            erreurs["categorie"] = f"Valeurs acceptées : {', '.join(sorted(self.CATEGORIES_VALIDES))}."
+        if priorite not in self.PRIORITES_VALIDES:
+            erreurs["priorite"] = f"Valeurs acceptées : {', '.join(sorted(self.PRIORITES_VALIDES))}."
+
+        if erreurs:
+            raise ValidationError(erreurs)
+
+        # ── Vérification compteur ───────────────────────────────────────────────
+        if id_compteur is not None:
+            if not user_has_access_to_compteur(user, id_compteur):
+                raise ValidationError({"id_compteur": "Compteur inconnu ou accès non autorisé."})
+
+        # ── Création du ticket (litige Niveau 1) en base ────────────────────────
+        ticket_id      = f"TKT-{secrets.token_hex(8).upper()}"
+        date_ouverture = timezone.now()
+
+        with transaction.atomic():
+            Litiges.objects.create(
+                id_litige    = ticket_id,
+                niveau       = "1",
+                statut       = "Ouvert",
+                description  = f"[{categorie} / {priorite}] {sujet}\n\n{description}",
+                id_user      = user,
+                date_ouverture = date_ouverture,
+            )
+
+        log_audit(
+            auteur       = user,
+            action       = "TICKET_OUVERT",
+            objet_touche = ticket_id,
+            motif        = f"Ticket client — catégorie={categorie}, priorité={priorite}",
+            request      = request,
+        )
+
+        # ── Construction e-mails ────────────────────────────────────────────────
+        contexte_dossier = _construire_contexte_support(user)
+
+        html_client  = _generer_html_ticket_client(
+            ticket_id, user, sujet, description, categorie, priorite, date_ouverture
+        )
+        html_support = _generer_html_ticket_support(
+            ticket_id, user, sujet, description, categorie, priorite,
+            date_ouverture, contexte_dossier
+        )
+
+        sujet_mail_client  = f"✅ [ENEO Support] Ticket {ticket_id} — {sujet}"
+        sujet_mail_support = f"🎫 [Ticket {priorite.upper()}] {ticket_id} — {sujet}"
+
+        support_email        = getattr(settings, "SUPPORT_EMAIL",
+                                       getattr(settings, "DEFAULT_FROM_EMAIL", None))
+        email_client_envoye  = False
+        email_support_envoye = False
+
+        # ── Envoi e-mail client (+ fiche PDF du ticket en pièce jointe) ─────────
+        try:
+            msg = EmailMultiAlternatives(
+                subject   = sujet_mail_client,
+                body      = f"Ticket {ticket_id} bien enregistré. Consultez la version HTML de cet e-mail.",
+                from_email= settings.DEFAULT_FROM_EMAIL,
+                to        = [user.email],
+            )
+            msg.attach_alternative(html_client, "text/html")
+            try:
+                pdf_ticket = generer_pdf_ticket(
+                    ticket_id, user, sujet, description, categorie, priorite, date_ouverture,
+                )
+                msg.attach(f"ticket_{ticket_id}.pdf", pdf_ticket, "application/pdf")
+            except Exception as exc_pdf:
+                # Un échec de génération PDF ne doit pas empêcher l'envoi de
+                # l'e-mail HTML de confirmation — le ticket reste ouvert.
+                logger.error(
+                    "OuvrirTicketView: échec génération PDF (ticket=%s): %s", ticket_id, exc_pdf
+                )
+            msg.send(fail_silently=False)
+            email_client_envoye = True
+        except Exception as exc:
+            logger.error(
+                "OuvrirTicketView: échec e-mail client (user=%s, ticket=%s): %s",
+                user.pk, ticket_id, exc
+            )
+
+        # ── Envoi e-mail équipe support ─────────────────────────────────────────
+        if support_email:
+            try:
+                msg_sup = EmailMultiAlternatives(
+                    subject   = sujet_mail_support,
+                    body      = (
+                        f"Nouveau ticket {ticket_id} de {user.prenom} {user.nom} "
+                        f"({user.email}). Priorité : {priorite}. Catégorie : {categorie}."
+                    ),
+                    from_email= settings.DEFAULT_FROM_EMAIL,
+                    to        = [support_email],
+                    reply_to  = [user.email],
+                )
+                msg_sup.attach_alternative(html_support, "text/html")
+                msg_sup.send(fail_silently=False)
+                email_support_envoye = True
+            except Exception as exc:
+                logger.error(
+                    "OuvrirTicketView: échec e-mail support (ticket=%s): %s",
+                    ticket_id, exc
+                )
+        else:
+            logger.warning(
+                "OuvrirTicketView: SUPPORT_EMAIL non configuré — e-mail interne ignoré (ticket=%s).",
+                ticket_id
+            )
+
+        return Response(
+            {
+                "ticket_id"            : ticket_id,
+                "statut"               : "Ouvert",
+                "message"              : (
+                    f"Ticket ouvert. E-mail de confirmation envoyé à {user.email}."
+                    if email_client_envoye
+                    else f"Ticket {ticket_id} ouvert. L'envoi de l'e-mail de confirmation a échoué — "
+                         "contactez le support si nécessaire."
+                ),
+                "email_client_envoye"  : email_client_envoye,
+                "email_support_envoye" : email_support_envoye,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+# ==============================================================================
+# MODULE 12 — I18N (traduction FR→EN de l'app Flutter via DeepL)
+# ==============================================================================
+# Voir api/services/deepl_translate.py pour le détail de l'intégration DeepL
+# et la stratégie de cache. Cette vue est le SEUL point de contact entre le
+# client Flutter et DeepL : la clé DEEPL_API_KEY reste côté serveur (voir
+# settings.py pour l'explication complète + comment la configurer via .env).
+class TraduireTextesView(APIView):
+    """
+    POST /api/i18n/traduire/
+        {"textes": ["Accueil", "Paramètres", ...], "cible": "EN"}
+        -> {"traductions": ["Home", "Settings", ...]}  (même ordre, même longueur)
+
+    `AllowAny` volontairement : les écrans non authentifiés (connexion,
+    inscription, OTP) doivent eux aussi pouvoir s'afficher en anglais dès le
+    premier lancement. Le risque d'abus (proxy DeepL gratuit pour un tiers)
+    est couvert par `ScopedRateThrottle` + `DEFAULT_THROTTLE_RATES["traduction"]`
+    (settings.py) plutôt que par une authentification qui casserait l'usage
+    légitime sur les écrans de login/inscription.
+    """
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "traduction"
+
+    MAX_TEXTES = 200
+    LANGUES_AUTORISEES = {"EN", "FR"}
+
+    def post(self, request):
+        textes = request.data.get("textes")
+        cible = (request.data.get("cible") or "EN").upper()
+
+        if not textes or not isinstance(textes, list):
+            raise ValidationError({"textes": "Requis : liste non vide de chaînes."})
+        if len(textes) > self.MAX_TEXTES:
+            raise ValidationError({"textes": f"Maximum {self.MAX_TEXTES} textes par requête."})
+        if not all(isinstance(t, str) for t in textes):
+            raise ValidationError({"textes": "Chaque élément doit être une chaîne."})
+        if cible not in self.LANGUES_AUTORISEES:
+            raise ValidationError({"cible": f"Langue cible non supportée : {cible}."})
+
+        try:
+            traductions = deepl_translate.traduire(textes, langue_cible=cible)
+        except DeepLError as exc:
+            logger.warning("TraduireTextesView: échec DeepL : %s", exc)
+            return Response(
+                {"detail": "Traduction momentanément indisponible."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        return Response({"traductions": traductions})

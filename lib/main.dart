@@ -6,9 +6,12 @@ import 'package:flutter/material.dart';
 import 'firebase_options.dart';
 import 'package:provider/provider.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 
 import 'api/auth_service.dart';
 import 'api/device_token_api.dart';
+import 'l10n/app_locale_controller.dart';
+import 'l10n/translation_controller.dart';
 import 'services/firebase_messaging_service.dart';
 import 'screens/auth/login_screen.dart';
 import 'screens/home/main_shell.dart'; // chemin réel, cf. import dans login_screen.dart
@@ -36,6 +39,21 @@ Future<void> main() async {
   );
 
   final authService = AuthService();
+
+  // Sélecteur "Langue" de SettingsScreen : charge la langue déjà choisie
+  // (si l'utilisateur en a sélectionné une lors d'une session précédente)
+  // AVANT `runApp`, pour éviter un flash "français puis anglais" au tout
+  // premier frame.
+  final localeController = LocaleController();
+  await localeController.charger();
+
+  // Cache de traduction DeepL (voir l10n/translation_controller.dart) :
+  // charge sur disque les traductions déjà obtenues lors de sessions
+  // précédentes, AVANT `runApp`, pour que l'anglais s'affiche
+  // immédiatement si l'utilisateur a déjà basculé la langue par le passé
+  // — même hors connexion, sans nouvel appel à DeepL.
+  final translationController = TranslationController();
+  await translationController.charger();
 
   // --- Firebase Cloud Messaging ---
   // `onToken` est déclenché à l'initialisation ET à chaque rotation de
@@ -66,8 +84,12 @@ Future<void> main() async {
   );
 
   runApp(
-    ChangeNotifierProvider.value(
-      value: authService,
+    MultiProvider(
+      providers: [
+        ChangeNotifierProvider.value(value: authService),
+        ChangeNotifierProvider.value(value: localeController),
+        ChangeNotifierProvider.value(value: translationController),
+      ],
       child: const MyApp(),
     ),
   );
@@ -84,10 +106,35 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // `context.watch` : reconstruit MaterialApp (donc les délégués de
+    // localisation Material/Cupertino intégrés — dates, "OK"/"Annuler"
+    // des pickers système, etc.) dès que `LocaleController.definirLangue`
+    // est appelé depuis le sélecteur de `settings_screen.dart`.
+    final locale = context.watch<LocaleController>().locale;
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'AxelPay',
       theme: AppTheme.theme,
+      // Clamp text scale factor : évite le texte démesuré sur tablettes/desktop
+      // qui agrandissent automatiquement la typographie système.
+      builder: (context, child) {
+        return MediaQuery(
+          data: MediaQuery.of(context).copyWith(
+            textScaler: MediaQuery.of(context).textScaler.clamp(
+              minScaleFactor: 0.85,
+              maxScaleFactor: 1.15,
+            ),
+          ),
+          child: child!,
+        );
+      },
+      locale: locale,
+      supportedLocales: LocaleController.supported,
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
       // On ne pointe plus directement vers LoginScreen : AuthGate décide de
       // l'écran à afficher selon l'état de la session.
       home: const AuthGate(),

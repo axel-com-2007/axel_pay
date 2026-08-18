@@ -77,6 +77,7 @@ NOTCHPAY_CALLBACK_URL = os.environ.get(
     "NOTCHPAY_CALLBACK_URL",
     "https://munchkin-native-distant.ngrok-free.app/api/webhooks/notchpay/",
 )
+SUPPORT_EMAIL = "bleza4017@gmail.com"
 
 # ⚠️ MODE SANDBOX DE TEST — cf. api/services/notchpay.py::initialiser_paiement.
 # Quand ce flag est actif, le montant RÉELLEMENT envoyé à l'API NotchPay est
@@ -94,6 +95,42 @@ NOTCHPAY_SANDBOX_FORCER_MONTANT_ZERO = os.environ.get(
     "NOTCHPAY_SANDBOX_ZERO_FCFA",
     "true" if "_test." in NOTCHPAY_PUBLIC_KEY else "false",
 ).lower() in ("1", "true", "yes")
+
+
+# ==============================================================================
+# DEEPL — Traduction automatique FR→EN (i18n app Flutter, api/services/
+# deepl_translate.py + api/views.py::TraduireTextesView).
+# ==============================================================================
+# ⚠️ Contrairement à NOTCHPAY_*/ORANGE_SMS_*, AUCUNE valeur de secours n'est
+# fournie en dur ici : une clé DeepL committée dans le dépôt (même "pour le
+# dev") serait un vrai secret facturable exposé publiquement dès le premier
+# push — pas un compromis acceptable comme pour les clés sandbox NotchPay.
+# Sans variable d'environnement positionnée, la traduction échoue
+# explicitement (DeepLError, voir deepl_translate.py) plutôt que d'utiliser
+# une clé devinée ou partagée.
+#
+# Pour obtenir une clé : https://www.deepl.com/pro-api (offre "API Free"
+# suffisante pour démarrer — 500 000 caractères/mois gratuits). La clé a le
+# format XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX:fx (suffixe ":fx" = plan Free).
+#
+# Pour la configurer :
+#   1. Ajoute dans le fichier `.env` (placé à côté de `manage.py`, jamais
+#      commité — déjà dans .gitignore comme le reste des secrets) :
+#        DEEPL_API_KEY=ta-cle-ici:fx
+#   2. Redémarre `python manage.py runserver` (le `.env` n'est relu qu'au
+#      démarrage, cf. `load_dotenv` tout en haut de ce fichier).
+# Rien d'autre à faire : `DEEPL_API_URL` ci-dessous choisit automatiquement
+# le bon endpoint (api-free.deepl.com vs api.deepl.com) selon le suffixe
+# ":fx" de la clé, sur le même principe que NOTCHPAY_SANDBOX_FORCER_MONTANT_ZERO
+# plus bas, qui se base lui aussi sur la forme de la clé plutôt que sur un
+# flag séparé à ne pas oublier de changer.
+DEEPL_API_KEY = os.environ.get("DEEPL_API_KEY")
+DEEPL_API_URL = os.environ.get(
+    "DEEPL_API_URL",
+    "https://api-free.deepl.com/v2/translate"
+    if (DEEPL_API_KEY or "").endswith(":fx")
+    else "https://api.deepl.com/v2/translate",
+)
 
 
 # ==============================================================================
@@ -310,6 +347,17 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": (
         "rest_framework.permissions.IsAuthenticated",
     ),
+    # `traduction` : taux dédié à TraduireTextesView (api/views.py). Cette
+    # vue est volontairement `AllowAny` (les écrans de login/inscription,
+    # non authentifiés, ont eux aussi besoin d'être traduits) — donc SANS
+    # limite elle serait un proxy DeepL ouvert à quiconque trouve l'URL,
+    # facturé sur le compte DeepL du projet. Le cache local Flutter (voir
+    # lib/l10n/translation_controller.dart) fait qu'un usage normal ne
+    # déclenche qu'une poignée d'appels par appareil, donc cette limite
+    # n'affecte pas l'usage légitime.
+    "DEFAULT_THROTTLE_RATES": {
+        "traduction": "40/hour",
+    },
 }
 
 

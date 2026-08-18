@@ -68,9 +68,12 @@ from .views import (
     RemboursementView,
     # Module 6 — Notifications
     NotificationHistoriqueView,
+    NotificationMarquerLueView,
+    NotificationNonLuesCountView,
+    NotificationMarquerToutesLuesView,
     DeviceRegisterView,
     DeviceUnregisterView,
-    DeviceUnregisterByTokenView, 
+    DeviceUnregisterByTokenView,
     # Module 7 — Back-office administrateur
     AdminDashboardKPIView,
     AdminUserManagementView,
@@ -89,6 +92,10 @@ from .views import (
     DeleteAccountView,
 # Module 10 — Assistant de support IA
     SupportChatView,
+    # Module 11 — Tickets de support
+    OuvrirTicketView,
+    # Module 12 — I18N (traduction DeepL)
+    TraduireTextesView,
 )
 
 
@@ -177,10 +184,27 @@ urlpatterns = [
     # ==========================================================================
     # MODULE 6 — NOTIFICATIONS (CDC 10)
     # ==========================================================================
+    # GET  /api/notifications/              → liste paginée (param: ?non_lues=true)
+    #   Partagé entre dashboard ET écran Paramètres — même endpoint, même donnée.
     path("notifications/", NotificationHistoriqueView.as_view(), name="notification-historique"),
+
+    # GET  /api/notifications/non-lues/count/  → {"count": <int>} pour le badge
+    #   Dashboard ET Paramètres appellent ce même endpoint → badge synchronisé.
+    path("notifications/non-lues/count/", NotificationNonLuesCountView.as_view(),
+         name="notification-non-lues-count"),
+
+    # POST /api/notifications/tout-lire/   → marque toutes les notifs comme lues
+    path("notifications/tout-lire/", NotificationMarquerToutesLuesView.as_view(),
+         name="notification-tout-lire"),
+
+    # PATCH /api/notifications/<id>/lue/   → marque une notif individuelle comme lue
+    #   Utilisable depuis dashboard et depuis écran Paramètres — synchro automatique.
+    path("notifications/<str:id_notification>/lue/", NotificationMarquerLueView.as_view(),
+         name="notification-marquer-lue"),
+
     path("devices/", DeviceRegisterView.as_view(), name="device-register"),
     path("devices/<int:id_device>/desenregistrer/", DeviceUnregisterView.as_view(), name="device-unregister"),
-    path("devices/desenregistrer/", DeviceUnregisterByTokenView.as_view(), name="device-unregister-by-token"), 
+    path("devices/desenregistrer/", DeviceUnregisterByTokenView.as_view(), name="device-unregister-by-token"),
 
     # ==========================================================================
     # MODULE 7 — BACK-OFFICE ADMINISTRATEUR (CDC 5.4 — RG-04, RG-05)
@@ -213,8 +237,32 @@ urlpatterns = [
     path("compte/desactiver/", DeleteAccountView.as_view(), name="compte-desactiver"),
 
     # ==========================================================================
-    # MODULE 10 — ASSISTANT DE SUPPORT IA (écran "Assistance")
+    # MODULE 10 — ASSISTANT DE SUPPORT IA (écran "Assistance" & "Paramètres")
     # ==========================================================================
+    # POST /api/support/chat/
+    #   Point d'entrée UNIQUE du chatbot IA — utilisé par :
+    #     • l'écran Support du dashboard (bouton "Chat en direct") ;
+    #     • l'écran Paramètres (section "Chat en direct" / "Écrire un message").
+    #   Les deux écrans envoient le même payload {messages:[...]}.
     path("support/chat/", SupportChatView.as_view(), name="support-chat"),
+
+    # ==========================================================================
+    # MODULE 11 — TICKETS DE SUPPORT (écran Paramètres → "Ouvrir un ticket")
+    # ==========================================================================
+    # POST /api/support/tickets/ouvrir/
+    #   Crée un litige formel + envoie deux e-mails HTML professionnels via SMTP :
+    #     - Au client    : accusé de réception avec numéro de ticket.
+    #     - Au support   : fiche complète du dossier client.
+    path("support/tickets/ouvrir/", OuvrirTicketView.as_view(), name="support-ticket-ouvrir"),
+
+    # ==========================================================================
+    # MODULE 12 — I18N (écran Paramètres → sélecteur de langue FR/EN)
+    # ==========================================================================
+    # POST /api/i18n/traduire/
+    #   Traduit une liste de chaînes FR -> EN via DeepL (voir
+    #   api/services/deepl_translate.py). Appelé par
+    #   lib/l10n/translation_controller.dart côté Flutter, jamais DeepL
+    #   directement — la clé API reste côté serveur.
+    path("i18n/traduire/", TraduireTextesView.as_view(), name="i18n-traduire"),
 
 ]

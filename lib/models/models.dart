@@ -428,6 +428,23 @@ class ConsommationPoint {
       periode: periode,
     );
   }
+
+  /// Cf. `UserModel.toCacheJson` — même principe (cache local §7.6).
+  Map<String, dynamic> toCacheJson() => {
+        'moisLabel': moisLabel,
+        'kwh': kwh,
+        'fcfa': fcfa,
+        'periode': periode.toIso8601String(),
+      };
+
+  factory ConsommationPoint.fromCacheJson(Map<String, dynamic> json) {
+    return ConsommationPoint(
+      moisLabel: json['moisLabel'] as String? ?? '',
+      kwh: (json['kwh'] as num?)?.toDouble() ?? 0,
+      fcfa: (json['fcfa'] as num?)?.toDouble() ?? 0,
+      periode: DateTime.tryParse(json['periode'] as String? ?? '') ?? DateTime.now(),
+    );
+  }
 }
 
 class FactureModel {
@@ -756,6 +773,33 @@ class DelegationModel {
 
   String get porteeLabel =>
       portee == PorteeDelegation.contrat ? 'Tout le contrat' : 'Ce compteur uniquement';
+
+  /// Cf. `UserModel.toCacheJson` — même principe (cache local §7.6).
+  Map<String, dynamic> toCacheJson() => {
+        'id': id,
+        'portee': portee.name,
+        'idCompteur': idCompteur,
+        'idContrat': idContrat,
+        'cibleLabel': cibleLabel,
+        'idUserTiers': idUserTiers,
+        'nomTiers': nomTiers,
+        'telephoneTiers': telephoneTiers,
+        'droit': droit.name,
+      };
+
+  factory DelegationModel.fromCacheJson(Map<String, dynamic> json) {
+    return DelegationModel(
+      id: json['id'] as String? ?? '',
+      portee: PorteeDelegation.values.byName(json['portee'] as String? ?? 'compteur'),
+      idCompteur: json['idCompteur'] as int?,
+      idContrat: json['idContrat'] as int?,
+      cibleLabel: json['cibleLabel'] as String? ?? '',
+      idUserTiers: json['idUserTiers'] as int?,
+      nomTiers: json['nomTiers'] as String? ?? '',
+      telephoneTiers: json['telephoneTiers'] as String? ?? '',
+      droit: DroitDelegation.values.byName(json['droit'] as String? ?? 'lecture'),
+    );
+  }
 }
 
 /// `type_droit` ∈ {Lecture, Paiement, Lecture_Paiement} depuis la
@@ -846,6 +890,37 @@ class NotificationModel {
       dateEnvoi: _date(json['date_envoi']),
       dateLecture: json['date_lecture'] != null ? DateTime.tryParse('${json['date_lecture']}') : null,
       idCompteur: json['id_compteur'] as int?,
+    );
+  }
+
+  /// Cf. `UserModel.toCacheJson` — même principe (cache local §7.6, limité
+  /// à la première page — voir `EneoRepository.getNotifications`).
+  Map<String, dynamic> toCacheJson() => {
+        'id': id,
+        'objet': objet,
+        'contenu': contenu,
+        'canal': canal,
+        'criticite': criticite.name,
+        'statut': statut,
+        'dateEnvoi': dateEnvoi.toIso8601String(),
+        'dateLecture': dateLecture?.toIso8601String(),
+        'idCompteur': idCompteur,
+      };
+
+  factory NotificationModel.fromCacheJson(Map<String, dynamic> json) {
+    return NotificationModel(
+      id: json['id'] as String? ?? '',
+      objet: json['objet'] as String? ?? '',
+      contenu: json['contenu'] as String? ?? '',
+      canal: json['canal'] as String? ?? 'Push',
+      criticite: NiveauCriticiteNotification.values
+          .byName(json['criticite'] as String? ?? 'normal'),
+      statut: json['statut'] as String? ?? 'Envoyé',
+      dateEnvoi: DateTime.tryParse(json['dateEnvoi'] as String? ?? '') ?? DateTime.now(),
+      dateLecture: json['dateLecture'] != null
+          ? DateTime.tryParse(json['dateLecture'] as String)
+          : null,
+      idCompteur: json['idCompteur'] as int?,
     );
   }
 }

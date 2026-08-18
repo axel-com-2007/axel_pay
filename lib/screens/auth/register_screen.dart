@@ -33,9 +33,11 @@ import 'package:provider/provider.dart';
 
 import '../../api/auth_service.dart';
 import '../../api/api_exception.dart';
+import '../../l10n/app_strings.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/animations/animations.dart';
 import '../../widgets/primary_button.dart';
+import '../../design_system/responsive/responsive_utils.dart';
 import 'otp_screen.dart';
 
 class RegisterScreen extends StatefulWidget {
@@ -82,15 +84,16 @@ class _RegisterScreenState extends State<RegisterScreen> {
   }
 
   String? _validatePassword(String? value) {
+    final s = S.read(context);
     if (value == null || value.length < 12) {
-      return '12 caractères minimum';
+      return s.registerMdp12CaracteresMin;
     }
     final hasUpper = value.contains(RegExp(r'[A-Z]'));
     final hasLower = value.contains(RegExp(r'[a-z]'));
     final hasDigit = value.contains(RegExp(r'[0-9]'));
     final hasSpecial = value.contains(RegExp(r'[!@#\$&*~%^()\-_=+]'));
     if (!hasUpper || !hasLower || !hasDigit || !hasSpecial) {
-      return 'Majuscule, minuscule, chiffre et caractère spécial requis';
+      return s.registerMdpComplexite;
     }
     return null;
   }
@@ -98,7 +101,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
   Future<void> _sInscrire() async {
     if (!_formKey.currentState!.validate()) return;
     if (!cguAcceptees) {
-      _showSnack("Vous devez accepter les CGU pour continuer");
+      _showSnack(S.read(context).registerCguObligatoire);
       _shakeForm.shake();
       return;
     }
@@ -145,13 +148,23 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final s = S.of(context);
     return Scaffold(
       backgroundColor: AppColors.background,
       body: SingleChildScrollView(
         padding: const EdgeInsets.only(bottom: 32),
         child: Form(
           key: _formKey,
-          child: Column(
+          child: Center(
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxWidth: context.isDesktop
+                    ? AppBreakpoints.maxFormWidth + 80
+                    : context.isTablet
+                        ? AppBreakpoints.maxFormWidth
+                        : double.infinity,
+              ),
+            child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               // ===== Bandeau photo + badge "NEW AGENCY" =====
@@ -164,16 +177,17 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 child: FadeSlideIn(
                   offsetY: 18,
                   child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 24),
+                padding: EdgeInsets.symmetric(
+                  horizontal: context.isDesktop ? 40 : context.isTablet ? 32 : 24),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const SizedBox(height: 20),
                     const Center(child: Text('AxelPay', style: AppTextStyles.brand)),
                     const SizedBox(height: 8),
-                    const Center(
+                    Center(
                       child: Text(
-                        'Gérez vos factures et recharges Eneo',
+                        s.authTagline,
                         style: AppTextStyles.bodyMuted,
                         textAlign: TextAlign.center,
                       ),
@@ -185,7 +199,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                       children: [
                         Expanded(
                           child: _UnderlineField(
-                            label: 'Prénom',
+                            label: s.registerPrenomLabel,
                             controller: prenomController,
                             hint: 'Axel',
                             validator: _required,
@@ -194,7 +208,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                         const SizedBox(width: 16),
                         Expanded(
                           child: _UnderlineField(
-                            label: 'Nom',
+                            label: s.registerNomLabel,
                             controller: nomController,
                             hint: 'Mai',
                             validator: _required,
@@ -205,13 +219,13 @@ class _RegisterScreenState extends State<RegisterScreen> {
                     const SizedBox(height: 22),
 
                     _UnderlineField(
-                      label: 'Numéro de téléphone',
+                      label: s.registerTelephoneLabel,
                       controller: telephoneController,
                       hint: '+237 6XX XXX XXX',
                       keyboardType: TextInputType.phone,
                       validator: (v) {
                         if (v == null || !v.startsWith('+237') || v.trim().length < 13) {
-                          return 'Format attendu : +237XXXXXXXXX';
+                          return s.registerTelephoneFormatInvalide;
                         }
                         return null;
                       },
@@ -219,7 +233,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                     const SizedBox(height: 22),
 
                     _UnderlineField(
-                      label: 'Quartier',
+                      label: s.registerQuartierLabel,
                       controller: quartierController,
                       hint: 'ex: Bonamoussadi, Douala',
                       validator: _required,
@@ -227,35 +241,39 @@ class _RegisterScreenState extends State<RegisterScreen> {
                     const SizedBox(height: 22),
 
                     _UnderlineField(
-                      label: 'e-mail',
+                      label: s.registerEmailLabel,
                       controller: emailController,
                       hint: 'vous@example.com',
                       keyboardType: TextInputType.emailAddress,
                       validator: (v) {
-                        if (v == null || !v.contains('@')) return 'E-mail invalide';
+                        if (v == null || !v.contains('@')) return s.registerEmailInvalide;
                         return null;
                       },
                     ),
                     const SizedBox(height: 22),
 
-                    const Text('Quartier', style: AppTextStyles.label),
+                    // NOTE i18n : ce libellé affichait par erreur "Quartier"
+                    // au-dessus des pastilles de situation matrimoniale
+                    // (copier/coller avec le champ Quartier ci-dessus,
+                    // corrigé au passage — cf. registerSituationMatrimonialeLabel).
+                    Text(s.registerSituationMatrimonialeLabel, style: AppTextStyles.label),
                     const SizedBox(height: 14),
                     Wrap(
                       spacing: 14,
                       runSpacing: 12,
-                      children: situations.map((s) {
-                        final selected = s == situationMatrimoniale;
+                      children: situations.map((valeur) {
+                        final selected = valeur == situationMatrimoniale;
                         return _StatusCircleChip(
-                          label: s,
+                          label: s.situationLabel(valeur),
                           selected: selected,
-                          onTap: () => setState(() => situationMatrimoniale = s),
+                          onTap: () => setState(() => situationMatrimoniale = valeur),
                         );
                       }).toList(),
                     ),
                     const SizedBox(height: 26),
 
                     _UnderlineField(
-                      label: 'Password',
+                      label: s.registerMotDePasseLabel,
                       controller: passwordController,
                       hint: 'Min. 12 caractères, Aa1!',
                       obscureText: obscurePassword,
@@ -271,12 +289,12 @@ class _RegisterScreenState extends State<RegisterScreen> {
                     const SizedBox(height: 22),
 
                     _UnderlineField(
-                      label: 'Confirm Password',
+                      label: s.registerConfirmMotDePasseLabel,
                       controller: confirmPasswordController,
-                      hint: 'Ressaisissez le mot de passe',
+                      hint: s.registerConfirmMotDePasseHint,
                       obscureText: obscurePassword,
                       validator: (v) {
-                        if (v != passwordController.text) return 'Les mots de passe diffèrent';
+                        if (v != passwordController.text) return s.registerMotsDePasseDifferents;
                         return null;
                       },
                     ),
@@ -299,9 +317,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
                               size: 20,
                             ),
                             const SizedBox(width: 12),
-                            const Expanded(
+                            Expanded(
                               child: Text(
-                                "J'accepte les conditions générales",
+                                s.registerCguLabel,
                                 style: AppTextStyles.body,
                               ),
                             ),
@@ -310,18 +328,17 @@ class _RegisterScreenState extends State<RegisterScreen> {
                       ),
                     ),
                     const SizedBox(height: 6),
-                    const Padding(
-                      padding: EdgeInsets.only(left: 4),
+                    Padding(
+                      padding: const EdgeInsets.only(left: 4),
                       child: Text(
-                        'Politique de confidentialité conforme à la loi camerounaise '
-                        'n° 2010/012 sur la protection des données personnelles.',
+                        s.registerPolitiqueConfidentialite,
                         style: AppTextStyles.caption,
                       ),
                     ),
                     const SizedBox(height: 28),
 
                     PrimaryButton(
-                      label: 'Créer mon compte',
+                      label: s.registerBouton,
                       loading: loading,
                       onPressed: _sInscrire,
                     ),
@@ -330,14 +347,14 @@ class _RegisterScreenState extends State<RegisterScreen> {
                     Center(
                       child: GestureDetector(
                         onTap: () => Navigator.of(context).maybePop(),
-                        child: const Row(
+                        child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Icon(Icons.check_circle, color: AppColors.primary, size: 18),
-                            SizedBox(width: 8),
+                            const Icon(Icons.check_circle, color: AppColors.primary, size: 18),
+                            const SizedBox(width: 8),
                             Text(
-                              'Déjà un compte ?',
-                              style: TextStyle(
+                              s.registerDejaUnCompte,
+                              style: const TextStyle(
                                 color: AppColors.textSecondary,
                                 fontWeight: FontWeight.w600,
                                 fontSize: 14,
@@ -356,10 +373,13 @@ class _RegisterScreenState extends State<RegisterScreen> {
           ),
         ),
       ),
+      ),
+    ),
     );
   }
 
-  String? _required(String? v) => (v == null || v.trim().isEmpty) ? 'Champ requis' : null;
+  String? _required(String? v) =>
+      (v == null || v.trim().isEmpty) ? S.read(context).authChampRequis : null;
 }
 
 /// Bandeau photo en tête d'écran avec badge "NEW AGENCY", tel que dans

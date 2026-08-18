@@ -15,6 +15,7 @@ import 'package:flutter/material.dart';
 import '../design_system/design_system.dart';
 
 export '../design_system/design_system.dart';
+// responsive_utils est déjà réexporté via design_system.dart
 
 class AppTheme {
   AppTheme._();

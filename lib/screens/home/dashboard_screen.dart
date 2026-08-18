@@ -49,10 +49,12 @@ import '../contracts/contracts_screen.dart';
 import '../payment/payment_screen.dart';
 import '../postpaid/postpaid_screen.dart';
 import '../prepaid/prepaid_screen.dart';
+import '../profile/edit_profile_screen.dart';
 import '../settings/settings_screen.dart';
 import '../support/support_screen.dart';
 import 'calendar_history_screen.dart';
 import '../notifications/notifications_screen.dart';
+import '../../design_system/responsive/responsive_utils.dart';
 import 'contract_search_overlay.dart';
 
 /// Nombre de contrats affichés d'emblée sur l'accueil (les plus récents).
@@ -164,6 +166,29 @@ class _DashboardScreenState extends State<DashboardScreen> {
       setState(() => erreur = e.message);
     } catch (e) {
       setState(() => erreur = 'Une erreur est survenue. Vérifiez votre connexion.');
+    }
+  }
+
+  /// Ouvre l'écran de modification du profil depuis l'avatar (cercle bleu)
+  /// et ne rafraîchit que le profil au retour (pas tout le dashboard) si
+  /// [EditProfileScreen] signale une modification via `pop(context, true)`.
+  Future<void> _ouvrirProfil() async {
+    final modifie = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(builder: (_) => EditProfileScreen(user: user)),
+    );
+    if (modifie == true) {
+      await _rafraichirProfil();
+    }
+  }
+
+  Future<void> _rafraichirProfil() async {
+    try {
+      final u = await _repo.getProfile();
+      if (!mounted) return;
+      setState(() => user = u.data);
+    } on ApiException catch (_) {
+      // Repli silencieux : le profil affiché reste celui déjà chargé si
+      // le rafraîchissement échoue (ex: hors-ligne).
     }
   }
 
@@ -391,7 +416,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   /// contenu.
   Widget _buildSquelette() {
     return ListView(
-      padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 32), // (responsive: padding augmenté sur tablette/desktop via ConstrainedPageBody)
       children: const [
         ShimmerBox(width: 220, height: 70, borderRadius: BorderRadius.all(Radius.circular(18))),
         SizedBox(height: 20),
@@ -437,7 +462,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Widget _buildContenu() {
     final compteurSuspendu = compteurActif != null && !compteurActif!.actif;
-    return CustomScrollView(
+    final scrollView = CustomScrollView(
       slivers: [
         SliverToBoxAdapter(child: _buildEnTete()),
         if (horsLigne) SliverToBoxAdapter(child: OfflineBanner(derniereSynchro: derniereSynchro)),
@@ -446,7 +471,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           SliverToBoxAdapter(child: _buildRechercheContrat()),
         SliverToBoxAdapter(
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
+            padding: EdgeInsets.fromLTRB(context.isDesktop ? 32 : 20, 20, context.isDesktop ? 32 : 20, 0),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -466,12 +491,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
         const SliverToBoxAdapter(child: SizedBox(height: 24)),
       ],
     );
+    // Sur desktop, on centre et on contraint la largeur du contenu
+    if (context.isDesktop) {
+      return Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: AppBreakpoints.maxContentWidth),
+          child: scrollView,
+        ),
+      );
+    }
+    return scrollView;
   }
 
   /// Bulle de bienvenue turquoise + avatar, fidèle à la maquette d'accueil.
   Widget _buildEnTete() {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 16, 20, 4),
+      padding: EdgeInsets.fromLTRB(context.isDesktop ? 32 : 20, 16, context.isDesktop ? 32 : 20, 4),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -530,18 +565,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ],
               ),
               const SizedBox(height: 18),
-              Container(
-                width: 52,
-                height: 52,
-                decoration: const BoxDecoration(
-                  gradient: AppColors.primaryGradient,
-                  shape: BoxShape.circle,
-                ),
-                alignment: Alignment.center,
-                child: Text(
-                  user?.initiales ?? '',
-                  style: const TextStyle(
-                      color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18),
+              GestureDetector(
+                onTap: _ouvrirProfil,
+                child: Container(
+                  width: 52,
+                  height: 52,
+                  decoration: const BoxDecoration(
+                    gradient: AppColors.primaryGradient,
+                    shape: BoxShape.circle,
+                  ),
+                  alignment: Alignment.center,
+                  child: Text(
+                    user?.initiales ?? '',
+                    style: const TextStyle(
+                        color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18),
+                  ),
                 ),
               ),
             ],

@@ -162,6 +162,26 @@ class EneoRepository {
 
   Future<Map<String, dynamic>> exportMyData() => _api.exportMyData();
 
+  /// Ouvre un ticket de support formel (module 11) : crée un litige côté
+  /// serveur et déclenche l'envoi d'un e-mail de confirmation au client
+  /// (avec la fiche du ticket en pièce jointe PDF) ainsi qu'un e-mail au
+  /// support avec le dossier complet.
+  Future<Map<String, dynamic>> ouvrirTicket({
+    required String sujet,
+    required String description,
+    String categorie = 'Autre',
+    String priorite = 'Normale',
+    int? idCompteur,
+  }) {
+    return _api.ouvrirTicket(
+      sujet: sujet,
+      description: description,
+      categorie: categorie,
+      priorite: priorite,
+      idCompteur: idCompteur,
+    );
+  }
+
   /// §7.6 : purge du cache local hors-ligne une fois le compte désactivé
   /// côté serveur. Contrairement à [logout], on ne purge qu'en cas de
   /// succès : un échec de désactivation laisse le compte actif, le cache
@@ -199,34 +219,65 @@ class EneoRepository {
 
   /// Résout toutes les adresses depuis `GET /adresses/`.
   /// Retourne labels (texte complet) ET villes (ville seule) en un seul appel.
+  /// Consultable hors-ligne (§7.6) : les adresses changent rarement, donc
+  /// un repli sur le dernier instantané connu évite un appel réseau
+  /// bloquant à chaque enrichissement de compteur (`_enrichirTous`,
+  /// `getContratCompteurs`...) quand la connexion est coupée.
   Future<({Map<int, String> labels, Map<int, String> villes})> _adresseData() async {
-    final raw = asList(await _api.listAdresses());
-    final labels = <int, String>{};
-    final villes = <int, String>{};
-    for (final a in raw) {
-      final id = a['id_adresse'] as int? ?? int.tryParse('${a['id_adresse']}');
-      if (id == null) continue;
-      final quartier = (a['quartier_description'] as String? ?? '').trim();
-      final commune = (a['commune'] as String? ?? '').trim();
-      final ville = (a['ville'] as String? ?? '').trim();
-      labels[id] = [quartier, commune, ville].where((s) => s.isNotEmpty).join(', ');
-      villes[id] = ville;
-    }
-    return (labels: labels, villes: villes);
+    final result = await _cached<({Map<int, String> labels, Map<int, String> villes})>(
+      key: 'adresses',
+      fetch: () async {
+        final raw = asList(await _api.listAdresses());
+        final labels = <int, String>{};
+        final villes = <int, String>{};
+        for (final a in raw) {
+          final id = a['id_adresse'] as int? ?? int.tryParse('${a['id_adresse']}');
+          if (id == null) continue;
+          final quartier = (a['quartier_description'] as String? ?? '').trim();
+          final commune = (a['commune'] as String? ?? '').trim();
+          final ville = (a['ville'] as String? ?? '').trim();
+          labels[id] = [quartier, commune, ville].where((s) => s.isNotEmpty).join(', ');
+          villes[id] = ville;
+        }
+        return (labels: labels, villes: villes);
+      },
+      encode: (r) => {
+        'labels': r.labels.map((id, v) => MapEntry('$id', v)),
+        'villes': r.villes.map((id, v) => MapEntry('$id', v)),
+      },
+      decode: (json) => (
+        labels: (json['labels'] as Map<String, dynamic>? ?? const {})
+            .map((k, v) => MapEntry(int.parse(k), v as String)),
+        villes: (json['villes'] as Map<String, dynamic>? ?? const {})
+            .map((k, v) => MapEntry(int.parse(k), v as String)),
+      ),
+    );
+    return result.data;
   }
 
   /// Prix du kWh actuellement en vigueur pour un type de compteur donné
   /// (`date_fin IS NULL` = tarif courant, RG-07).
+  /// Consultable hors-ligne (§7.6) : le tarif ne change quasiment jamais,
+  /// donc évite un appel réseau à chaque enrichissement de compteur
+  /// prépayé quand la connexion est coupée.
   Future<double?> _tarifCourant(String typeCompteurApi) async {
-    final raw = asList(await _api.listTarifs(typeCompteur: typeCompteurApi));
-    for (final t in raw) {
-      if (t['date_fin'] == null) {
-        final v = t['prix_kwh'];
-        if (v is num) return v.toDouble();
-        return double.tryParse('$v');
-      }
-    }
-    return null;
+    final result = await _cached<double?>(
+      key: 'tarif_$typeCompteurApi',
+      fetch: () async {
+        final raw = asList(await _api.listTarifs(typeCompteur: typeCompteurApi));
+        for (final t in raw) {
+          if (t['date_fin'] == null) {
+            final v = t['prix_kwh'];
+            if (v is num) return v.toDouble();
+            return double.tryParse('$v');
+          }
+        }
+        return null;
+      },
+      encode: (v) => {'prix': v},
+      decode: (json) => (json['prix'] as num?)?.toDouble(),
+    );
+    return result.data;
   }
 
   // ==========================================================================
@@ -285,21 +336,43 @@ class EneoRepository {
   /// nombre de requêtes proportionnel au nombre de PAGES (2-3 pour 250
   /// contrats), pas au nombre de contrats — donc jamais de retour au N+1
   /// corrigé au point 1 de l'audit.
+  ///
+  /// Consultable hors-ligne (§7.6) uniquement pour la liste complète non
+  /// filtrée ([search] null) — l'écran "Mes contrats" doit rester
+  /// utilisable sans réseau. Une recherche explicite ([search] non-null)
+  /// reste réseau uniquement : un résultat de recherche filtré ne doit
+  /// jamais retomber silencieusement sur l'ancienne liste complète en
+  /// cache.
   Future<List<ContratModel>> getAllContrats({String? search}) async {
-    final contrats = <ContratModel>[];
-    dynamic json = await _api.listContrats(search: search, pageSize: 100);
-    contrats.addAll(
-      asList(json).cast<Map<String, dynamic>>().map(ContratModel.fromJson),
-    );
-    String? next = (json is Map<String, dynamic>) ? json['next'] as String? : null;
-    while (next != null) {
-      json = await _api.listContratsPage(next);
+    Future<List<ContratModel>> fetchTout() async {
+      final contrats = <ContratModel>[];
+      dynamic json = await _api.listContrats(search: search, pageSize: 100);
       contrats.addAll(
         asList(json).cast<Map<String, dynamic>>().map(ContratModel.fromJson),
       );
-      next = (json is Map<String, dynamic>) ? json['next'] as String? : null;
+      String? next = (json is Map<String, dynamic>) ? json['next'] as String? : null;
+      while (next != null) {
+        json = await _api.listContratsPage(next);
+        contrats.addAll(
+          asList(json).cast<Map<String, dynamic>>().map(ContratModel.fromJson),
+        );
+        next = (json is Map<String, dynamic>) ? json['next'] as String? : null;
+      }
+      return contrats;
     }
-    return contrats;
+
+    if (search != null) return fetchTout();
+
+    final result = await _cached<List<ContratModel>>(
+      key: 'contrats_tous',
+      fetch: fetchTout,
+      encode: (list) => {'contrats': list.map((c) => c.toCacheJson()).toList()},
+      decode: (json) => (json['contrats'] as List)
+          .cast<Map<String, dynamic>>()
+          .map(ContratModel.fromCacheJson)
+          .toList(),
+    );
+    return result.data;
   }
 
   /// Aperçu de l'accueil : les [limit] contrats les plus récents, ET le
@@ -597,14 +670,14 @@ class EneoRepository {
     }
   }
 
-  /// Factures d'un compteur. Le cache local (§7.6) ne couvre QUE le cas
-  /// par défaut (`historiqueComplet: false`, les "12 dernières factures"
-  /// explicitement citées par le cahier des charges) : la consultation de
-  /// l'historique complet au-delà de 12 mois reste une action volontaire
-  /// de l'utilisateur qui suppose déjà une connexion active, donc pas
-  /// mise en cache (limite assumée pour rester dans le périmètre §7.6,
-  /// qui ne mentionne que les 12 dernières factures comme consultables
-  /// hors-ligne).
+  /// Factures d'un compteur. Cache local (§7.6) sur les deux cas :
+  ///  - `historiqueComplet: false` (défaut) : les "12 dernières factures"
+  ///    explicitement citées par le cahier des charges, clé
+  ///    `factures_$idCompteur` ;
+  ///  - `historiqueComplet: true` : l'historique complet au-delà de 12
+  ///    mois, dans une clé SÉPARÉE `factures_historique_$idCompteur` — ne
+  ///    remplace jamais le cache des "12 dernières" et vice versa, pour ne
+  ///    pas faire regresser silencieusement l'un au profit de l'autre.
   Future<CachedResult<List<FactureModel>>> getFactures(
     int idCompteur, {
     bool historiqueComplet = false,
@@ -614,13 +687,8 @@ class EneoRepository {
       return raw.cast<Map<String, dynamic>>().map(FactureModel.fromJson).toList();
     }
 
-    if (historiqueComplet) {
-      // Réseau uniquement, pas de repli cache — cf. commentaire ci-dessus.
-      return fetch().then((data) => CachedResult(data: data, isFromCache: false, syncedAt: DateTime.now()));
-    }
-
     return _cached<List<FactureModel>>(
-      key: 'factures_$idCompteur',
+      key: historiqueComplet ? 'factures_historique_$idCompteur' : 'factures_$idCompteur',
       fetch: fetch,
       encode: (list) => {'factures': list.map((f) => f.toCacheJson()).toList()},
       decode: (json) => (json['factures'] as List)
@@ -630,10 +698,24 @@ class EneoRepository {
     );
   }
 
+  /// Série de consommation (graphique), consultable hors-ligne (§7.6) : le
+  /// dernier instantané connu reste affichable sans réseau, plutôt qu'un
+  /// graphique vide.
   Future<List<ConsommationPoint>> getConsommation(int idCompteur) async {
-    final json = await _api.getConsommationGraph(idCompteur);
-    final serie = (json['serie'] as List? ?? const []);
-    return serie.cast<Map<String, dynamic>>().map(ConsommationPoint.fromJson).toList();
+    final result = await _cached<List<ConsommationPoint>>(
+      key: 'consommation_$idCompteur',
+      fetch: () async {
+        final json = await _api.getConsommationGraph(idCompteur);
+        final serie = (json['serie'] as List? ?? const []);
+        return serie.cast<Map<String, dynamic>>().map(ConsommationPoint.fromJson).toList();
+      },
+      encode: (list) => {'points': list.map((p) => p.toCacheJson()).toList()},
+      decode: (json) => (json['points'] as List)
+          .cast<Map<String, dynamic>>()
+          .map(ConsommationPoint.fromCacheJson)
+          .toList(),
+    );
+    return result.data;
   }
 
   /// Historique des recharges (et donc des jetons), consultable
@@ -658,19 +740,42 @@ class EneoRepository {
   /// délibérément PAS chargée en une seule fois — cf. commentaire de
   /// `StandardResultsSetPagination` dans `api/pagination.py`). [pageUrl]
   /// est le lien `next` de la page précédente ; `null` pour la première
-  /// page. Pas de cache local (contrairement à `getFactures`/
-  /// `getTransactions`) : l'historique de notifications n'a pas de valeur
-  /// hors-ligne documentée dans le CDC, donc pas de repli silencieux —
-  /// l'écran affiche une erreur explicite plutôt qu'une liste vide
-  /// trompeuse en cas de coupure réseau.
+  /// page.
+  ///
+  /// Seule la PREMIÈRE page ([pageUrl] null) est mise en cache local
+  /// (§7.6) : c'est la seule qui a une vraie valeur hors-ligne (les
+  /// dernières notifications reçues), le défilement vers l'historique
+  /// plus ancien suppose déjà une connexion active. Le lien `next` n'est
+  /// donc jamais rejoué depuis le cache (`next: null` en repli) — la
+  /// pagination reste une action réseau normale.
   Future<NotificationsPage> getNotifications({String? pageUrl}) async {
-    final json = pageUrl != null
-        ? await _api.listNotificationsPage(pageUrl)
-        : await _api.listNotifications();
-    final notifications =
-        asList(json).cast<Map<String, dynamic>>().map(NotificationModel.fromJson).toList();
-    final next = (json is Map<String, dynamic>) ? json['next'] as String? : null;
-    return NotificationsPage(notifications: notifications, next: next);
+    Future<NotificationsPage> fetch() async {
+      final json = pageUrl != null
+          ? await _api.listNotificationsPage(pageUrl)
+          : await _api.listNotifications();
+      final notifications =
+          asList(json).cast<Map<String, dynamic>>().map(NotificationModel.fromJson).toList();
+      final next = (json is Map<String, dynamic>) ? json['next'] as String? : null;
+      return NotificationsPage(notifications: notifications, next: next);
+    }
+
+    if (pageUrl != null) return fetch();
+
+    final result = await _cached<NotificationsPage>(
+      key: 'notifications_premiere_page',
+      fetch: fetch,
+      encode: (page) => {
+        'notifications': page.notifications.map((n) => n.toCacheJson()).toList(),
+      },
+      decode: (json) => NotificationsPage(
+        notifications: (json['notifications'] as List)
+            .cast<Map<String, dynamic>>()
+            .map(NotificationModel.fromCacheJson)
+            .toList(),
+        next: null,
+      ),
+    );
+    return result.data;
   }
 
   /// Un tour de l'assistant de support IA (écran Assistance). [messages]
@@ -685,39 +790,52 @@ class EneoRepository {
   /// compteur précis ou sur tout un contrat (REFONTE v1.5), tous compteurs
   /// confondus (cf. limite (5) : nom/téléphone du tiers non résolvables
   /// depuis cet endpoint).
+  /// Consultable hors-ligne (§7.6) : liste en lecture seule côté client,
+  /// utile pour au moins vérifier "qui a accès à quoi" sans réseau.
   Future<List<DelegationModel>> getDelegations() async {
-    final raw = asList(await _api.listDelegations())
-        .cast<Map<String, dynamic>>()
-        .where((j) => (j['statut'] as String? ?? 'Actif') == 'Actif')
-        .toList();
-    if (raw.isEmpty) return const [];
+    final result = await _cached<List<DelegationModel>>(
+      key: 'delegations',
+      fetch: () async {
+        final raw = asList(await _api.listDelegations())
+            .cast<Map<String, dynamic>>()
+            .where((j) => (j['statut'] as String? ?? 'Actif') == 'Actif')
+            .toList();
+        if (raw.isEmpty) return const [];
 
-    // Résout les libellés cibles (numéro de compteur / numéro de contrat)
-    // à partir des deux référentiels déjà chargés ailleurs, plutôt qu'un
-    // "Compteur #12" / "Contrat #7" générique.
-    final compteursParId = <int, Map<String, dynamic>>{};
-    for (final c in asList(await _api.listCompteurs())) {
-      final id = c['id_compteur'] as int? ?? int.tryParse('${c['id_compteur']}');
-      if (id != null) compteursParId[id] = c as Map<String, dynamic>;
-    }
-    final contrats = await _numerosContrats();
+        // Résout les libellés cibles (numéro de compteur / numéro de
+        // contrat) à partir des deux référentiels déjà chargés ailleurs,
+        // plutôt qu'un "Compteur #12" / "Contrat #7" générique.
+        final compteursParId = <int, Map<String, dynamic>>{};
+        for (final c in asList(await _api.listCompteurs())) {
+          final id = c['id_compteur'] as int? ?? int.tryParse('${c['id_compteur']}');
+          if (id != null) compteursParId[id] = c as Map<String, dynamic>;
+        }
+        final contrats = await _numerosContrats();
 
-    return raw.map((j) {
-      final idCompteur = j['id_compteur'] == null
-          ? null
-          : (j['id_compteur'] as int? ?? int.tryParse('${j['id_compteur']}'));
-      final idContrat = j['id_contrat'] == null
-          ? null
-          : (j['id_contrat'] as int? ?? int.tryParse('${j['id_contrat']}'));
-      String? cibleLabel;
-      if (idContrat != null) {
-        cibleLabel = contrats[idContrat] != null ? 'Contrat ${contrats[idContrat]}' : null;
-      } else if (idCompteur != null) {
-        final numero = compteursParId[idCompteur]?['numero_compteur'] as String?;
-        cibleLabel = numero != null ? 'Compteur $numero' : null;
-      }
-      return DelegationModel.fromJson(j, cibleLabel: cibleLabel);
-    }).toList();
+        return raw.map((j) {
+          final idCompteur = j['id_compteur'] == null
+              ? null
+              : (j['id_compteur'] as int? ?? int.tryParse('${j['id_compteur']}'));
+          final idContrat = j['id_contrat'] == null
+              ? null
+              : (j['id_contrat'] as int? ?? int.tryParse('${j['id_contrat']}'));
+          String? cibleLabel;
+          if (idContrat != null) {
+            cibleLabel = contrats[idContrat] != null ? 'Contrat ${contrats[idContrat]}' : null;
+          } else if (idCompteur != null) {
+            final numero = compteursParId[idCompteur]?['numero_compteur'] as String?;
+            cibleLabel = numero != null ? 'Compteur $numero' : null;
+          }
+          return DelegationModel.fromJson(j, cibleLabel: cibleLabel);
+        }).toList();
+      },
+      encode: (list) => {'delegations': list.map((d) => d.toCacheJson()).toList()},
+      decode: (json) => (json['delegations'] as List)
+          .cast<Map<String, dynamic>>()
+          .map(DelegationModel.fromCacheJson)
+          .toList(),
+    );
+    return result.data;
   }
 
   Future<void> revokeDelegation(String idDelegation) async {

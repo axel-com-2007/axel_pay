@@ -31,6 +31,7 @@ import '../../widgets/offline_banner.dart';
 import '../../widgets/status_badge.dart';
 import '../../shared/widgets/app_dialog.dart';
 import '../../shared/widgets/app_loader.dart';
+import '../../l10n/app_strings.dart';
 
 class MetersScreen extends StatefulWidget {
   const MetersScreen({super.key});
@@ -82,12 +83,13 @@ class _MetersScreenState extends State<MetersScreen> {
     } on ApiException catch (e) {
       setState(() => erreur = e.message);
     } catch (_) {
-      setState(() => erreur = 'Une erreur est survenue. Vérifiez votre connexion.');
+      setState(() => erreur = S.read(context).uneErreurEstSurvenue);
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final s = S.of(context);
     return FutureBuilder<void>(
       future: _chargement,
       builder: (context, snapshot) {
@@ -116,7 +118,7 @@ class _MetersScreenState extends State<MetersScreen> {
                   const SizedBox(height: 16),
                   ElevatedButton(
                     onPressed: () => setState(() => _chargement = _charger()),
-                    child: const Text('Réessayer'),
+                    child: Text(s.reessayer),
                   ),
                 ],
               ),
@@ -128,25 +130,24 @@ class _MetersScreenState extends State<MetersScreen> {
           child: ListView(
             padding: const EdgeInsets.fromLTRB(20, 12, 20, 32),
             children: [
-              _buildEnTeteProfil(),
+              _buildEnTeteProfil(s),
               if (horsLigne) ...[
                 const SizedBox(height: 16),
                 OfflineBanner(derniereSynchro: derniereSynchro, margin: EdgeInsets.zero),
               ],
               const SizedBox(height: 28),
-              SectionHeader(title: 'Mes compteurs (${compteurs.length})'),
+              SectionHeader(title: s.metersMesCompteursTitre(compteurs.length)),
               const SizedBox(height: 4),
-              const Text(
-                'Pour rattacher un nouveau compteur, ouvrez l’un de vos '
-                'contrats depuis l’onglet "Contrats".',
+              Text(
+                s.metersRattacherNouveauCompteurHint,
                 style: AppTextStyles.caption,
               ),
               const SizedBox(height: 12),
               if (compteurs.isEmpty)
-                const AppCard(
+                AppCard(
                   child: EmptyStateLottie(
                     asset: LottieAssets.girlSayHi,
-                    title: 'Aucun compteur rattaché pour le moment.',
+                    title: s.metersAucunCompteurRattache,
                     size: 100,
                   ),
                 )
@@ -159,18 +160,18 @@ class _MetersScreenState extends State<MetersScreen> {
                       ),
                     )),
               const SizedBox(height: 28),
-              const SectionHeader(title: 'Accès délégués'),
+              SectionHeader(title: s.metersAccesDelegues),
               const SizedBox(height: 8),
-              const Text(
-                'Personnes ayant reçu un accès à l’un de vos compteurs.',
+              Text(
+                s.metersPersonnesAyantRecuAcces,
                 style: AppTextStyles.bodyMuted,
               ),
               const SizedBox(height: 12),
               if (delegations.isEmpty)
-                const AppCard(
+                AppCard(
                   child: EmptyStateLottie(
                     asset: LottieAssets.search,
-                    title: 'Aucune délégation active.',
+                    title: s.metersAucuneDelegationActive,
                     size: 100,
                   ),
                 )
@@ -189,7 +190,7 @@ class _MetersScreenState extends State<MetersScreen> {
     );
   }
 
-  Widget _buildEnTeteProfil() {
+  Widget _buildEnTeteProfil(S s) {
     return Column(
       children: [
         CircleAvatar(
@@ -217,12 +218,12 @@ class _MetersScreenState extends State<MetersScreen> {
           spacing: 18,
           children: [
             _ProfileLink(
-              label: 'Modifier mon profil',
-              onTap: () => _showSnack('Rendez-vous dans l’onglet Paramètres pour modifier votre profil.'),
+              label: s.metersModifierMonProfil,
+              onTap: () => _showSnack(S.read(context).metersRendezVousParametres),
             ),
             _ProfileLink(
-              label: 'Changer de mot de passe',
-              onTap: () => _showSnack('Ré-authentification requise'),
+              label: s.metersChangerDeMotDePasse,
+              onTap: () => _showSnack(S.read(context).metersReAuthentificationRequise),
             ),
           ],
         ),
@@ -231,11 +232,12 @@ class _MetersScreenState extends State<MetersScreen> {
   }
 
   void _revoquer(DelegationModel d) async {
+    final s = S.read(context);
     final confirme = await AppDialog.confirm(
       context: context,
-      title: 'Révoquer cet accès ?',
-      message: '${d.nomTiers} perdra immédiatement l’accès à ce compteur.',
-      confirmLabel: 'Révoquer',
+      title: s.revoquerCetAccesTitre,
+      message: s.metersPerdImmediatementAccesCompteur(d.nomTiers),
+      confirmLabel: s.revoquer,
       danger: true,
     );
     if (confirme != true) return;
@@ -271,9 +273,10 @@ class _MetersScreenState extends State<MetersScreen> {
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setModalState) {
           Future<void> rechercher() async {
+            final sRead = S.read(ctx);
             final telephone = phoneController.text.trim();
             if (telephone.isEmpty) {
-              setModalState(() => erreurLocale = 'Saisissez un numéro de téléphone.');
+              setModalState(() => erreurLocale = sRead.metersSaisirNumeroTelephone);
               return;
             }
             setModalState(() {
@@ -286,7 +289,7 @@ class _MetersScreenState extends State<MetersScreen> {
               setModalState(() {
                 rechercheEnCours = false;
                 if (trouve == null) {
-                  erreurLocale = 'Aucun utilisateur inscrit avec ce numéro.';
+                  erreurLocale = sRead.metersAucunUtilisateurTrouve;
                 } else {
                   resultat = trouve;
                 }
@@ -299,12 +302,13 @@ class _MetersScreenState extends State<MetersScreen> {
             } catch (_) {
               setModalState(() {
                 rechercheEnCours = false;
-                erreurLocale = 'Une erreur est survenue. Vérifiez votre connexion.';
+                erreurLocale = sRead.uneErreurEstSurvenue;
               });
             }
           }
 
           Future<void> confirmer() async {
+            final sRead = S.read(ctx);
             final trouve = resultat;
             final idCompteur = int.tryParse(compteur.id);
             if (trouve == null || idCompteur == null) return;
@@ -320,7 +324,7 @@ class _MetersScreenState extends State<MetersScreen> {
                 cibleLabel: compteur.numero,
               );
               if (ctx.mounted) Navigator.pop(ctx);
-              _showSnack('Délégation accordée à ${trouve.nom} ${trouve.prenomMasque}.');
+              _showSnack(sRead.metersDelegationAccordeeA('${trouve.nom} ${trouve.prenomMasque}'));
               _charger();
             } on ApiException catch (e) {
               setModalState(() {
@@ -330,11 +334,12 @@ class _MetersScreenState extends State<MetersScreen> {
             } catch (_) {
               setModalState(() {
                 envoiEnCours = false;
-                erreurLocale = 'Une erreur est survenue. Vérifiez votre connexion.';
+                erreurLocale = sRead.uneErreurEstSurvenue;
               });
             }
           }
 
+          final s = S.of(ctx);
           return Padding(
             padding: EdgeInsets.only(
               left: 20,
@@ -346,9 +351,9 @@ class _MetersScreenState extends State<MetersScreen> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Déléguer l’accès — ${compteur.numero}', style: AppTextStyles.h3),
+                Text(s.metersDelegerAccesTitre(compteur.numero), style: AppTextStyles.h3),
                 const SizedBox(height: 14),
-                const Text('Numéro de téléphone du tiers', style: AppTextStyles.label),
+                Text(s.numeroTelephoneTiersLabel, style: AppTextStyles.label),
                 const SizedBox(height: 8),
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -368,7 +373,7 @@ class _MetersScreenState extends State<MetersScreen> {
                         onPressed: rechercheEnCours ? null : rechercher,
                         child: rechercheEnCours
                             ? const AppLoader.small(color: AppColors.white)
-                            : const Text('Rechercher'),
+                            : Text(s.rechercher),
                       ),
                   ],
                 ),
@@ -386,7 +391,7 @@ class _MetersScreenState extends State<MetersScreen> {
                         const SizedBox(width: 10),
                         Expanded(
                           child: Text(
-                            'Tiers trouvé : ${resultat!.nom} ${resultat!.prenomMasque}',
+                            s.tiersTrouve('${resultat!.nom} ${resultat!.prenomMasque}'),
                             style: AppTextStyles.label,
                           ),
                         ),
@@ -397,29 +402,29 @@ class _MetersScreenState extends State<MetersScreen> {
                                     resultat = null;
                                     erreurLocale = null;
                                   }),
-                          child: const Text('Changer'),
+                          child: Text(s.changer),
                         ),
                       ],
                     ),
                   ),
                 ],
                 const SizedBox(height: 16),
-                const Text('Niveau d’accès', style: AppTextStyles.label),
+                Text(s.niveauAccesLabel, style: AppTextStyles.label),
                 const SizedBox(height: 8),
                 RadioListTile<DroitDelegation>(
                   contentPadding: EdgeInsets.zero,
                   value: DroitDelegation.lecture,
                   groupValue: droit,
-                  title: const Text('Lecture seule'),
-                  subtitle: const Text('Consultation du solde et des factures'),
+                  title: Text(s.droitLectureSeuleTitre),
+                  subtitle: Text(s.droitLectureSeuleDesc),
                   onChanged: envoiEnCours ? null : (v) => setModalState(() => droit = v!),
                 ),
                 RadioListTile<DroitDelegation>(
                   contentPadding: EdgeInsets.zero,
                   value: DroitDelegation.lectureEtPaiement,
                   groupValue: droit,
-                  title: const Text('Lecture & paiement'),
-                  subtitle: const Text('Peut également régler ou recharger'),
+                  title: Text(s.droitLecturePaiementTitre),
+                  subtitle: Text(s.droitLecturePaiementDesc),
                   onChanged: envoiEnCours ? null : (v) => setModalState(() => droit = v!),
                 ),
                 if (erreurLocale != null) ...[
@@ -431,7 +436,7 @@ class _MetersScreenState extends State<MetersScreen> {
                   width: double.infinity,
                   child: ElevatedButton(
                     onPressed: resultat == null || envoiEnCours ? null : confirmer,
-                    child: Text(envoiEnCours ? 'Envoi…' : 'Confirmer la délégation'),
+                    child: Text(envoiEnCours ? s.envoiEnCours : s.contratsConfirmerDelegationBouton),
                   ),
                 ),
               ],
@@ -476,6 +481,7 @@ class _CompteurTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final s = S.of(context);
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
       child: AppCard(
@@ -505,7 +511,7 @@ class _CompteurTile extends StatelessWidget {
                     children: [
                       Text(compteur.numero, style: AppTextStyles.label),
                       Text(
-                        compteur.adresse.isNotEmpty ? compteur.adresse : 'Adresse non disponible',
+                        compteur.adresse.isNotEmpty ? compteur.adresse : s.adresseNonDisponible,
                         style: AppTextStyles.caption,
                       ),
                     ],
@@ -527,7 +533,7 @@ class _CompteurTile extends StatelessWidget {
                 TextButton.icon(
                   onPressed: onDelegate,
                   icon: const Icon(Icons.person_add_alt, size: 18),
-                  label: const Text('Déléguer'),
+                  label: Text(s.metersDelegerBouton),
                 ),
               ],
             ),
@@ -577,7 +583,7 @@ class _DelegationTile extends StatelessWidget {
             IconButton(
               onPressed: onRevoke,
               icon: const Icon(Icons.close, color: AppColors.danger, size: 20),
-              tooltip: 'Révoquer',
+              tooltip: S.of(context).revoquer,
             ),
           ],
         ),

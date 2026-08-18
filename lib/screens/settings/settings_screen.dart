@@ -30,12 +30,17 @@ import 'package:provider/provider.dart';
 import '../../api/api_exception.dart';
 import '../../api/auth_service.dart';
 import '../../data/eneo_repository.dart';
+import '../../l10n/app_locale_controller.dart';
+import '../../l10n/app_strings.dart';
 import '../../models/models.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/animations/animations.dart';
 import '../../widgets/app_card.dart';
 import '../../shared/widgets/app_bottom_sheet.dart';
 import '../auth/login_screen.dart';
+import '../notifications/notifications_screen.dart';
+import '../support/open_ticket_screen.dart';
+import '../support/support_chat_screen.dart';
 
 const List<Map<String, String>> _faq = [
   {
@@ -74,7 +79,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _repo = EneoRepository();
 
   late Future<CachedResult<UserModel>> _profil;
-  String langue = 'Français';
+  // ⚠️ i18n : `label`/`description` ci-dessous sont des champs hérités du
+  // modèle `NotificationPrefModel`, remplis pour satisfaire le constructeur
+  // mais JAMAIS affichés tels quels — l'affichage passe exclusivement par
+  // `S.notifPrefLabel(cle)` / `S.notifPrefDescription(cle)` (voir
+  // `_ouvrirNotifications` plus bas), qui mappent la `cle` (stable, jamais
+  // traduite) vers le libellé dans la langue courante. Faux positifs
+  // légitimes pour `find_untranslated_texts.py`.
   final List<NotificationPrefModel> prefs = [
     NotificationPrefModel(
       cle: 'securite',
@@ -148,6 +159,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
           );
         }
         final user = snapshot.data?.data;
+        final s = S.of(context);
+        final langueActuelle =
+            context.watch<LocaleController>().locale.languageCode == 'en'
+                ? s.langueAnglais
+                : s.langueFrancais;
         return ListView(
           padding: const EdgeInsets.fromLTRB(20, 12, 20, 40),
           children: [
@@ -180,7 +196,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const SectionHeader(title: 'Préférences'),
+                  SectionHeader(title: s.sectionPreferences),
                   const SizedBox(height: 6),
                   AppCard(
                     child: Column(
@@ -188,17 +204,33 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         SettingsTile(
                           icon: Icons.language,
                           iconColor: AppColors.info,
-                          title: 'Langue',
-                          subtitle: langue,
+                          title: s.langueTitre,
+                          subtitle: langueActuelle,
                           onTap: _choisirLangue,
                         ),
                         const Divider(height: 1),
                         SettingsTile(
                           icon: Icons.notifications_none,
                           iconColor: AppColors.warning,
-                          title: 'Notifications',
-                          subtitle: '${prefs.where((p) => p.active).length} canaux activés',
-                          onTap: _ouvrirNotifications,
+                          title: s.notificationsTitre,
+                          subtitle: s.canauxActives(prefs.where((p) => p.active).length),
+                          // Ouvre le MÊME écran que la cloche de l'accueil
+                          // (`DashboardScreen._NotificationBell` →
+                          // `NotificationsScreen`) : historique des
+                          // notifications déjà envoyées, identique en tout
+                          // point à celui du dashboard.
+                          onTap: () => Navigator.of(context).push(
+                            MaterialPageRoute(builder: (_) => const NotificationsScreen()),
+                          ),
+                          // Les préférences de canaux (switch sécurité,
+                          // jeton, solde bas...) restent accessibles via
+                          // cette icône dédiée, sans quitter le fil
+                          // principal "voir mes notifications".
+                          trailing: IconButton(
+                            icon: const Icon(Icons.tune, size: 20, color: AppColors.textMuted),
+                            tooltip: s.preferencesNotificationTooltip,
+                            onPressed: _ouvrirNotifications,
+                          ),
                         ),
                       ],
                     ),
@@ -213,7 +245,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const SectionHeader(title: 'Sécurité'),
+                  SectionHeader(title: s.sectionSecurite),
                   const SizedBox(height: 6),
                   AppCard(
                     child: Column(
@@ -221,7 +253,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         SettingsTile(
                           icon: Icons.phone_iphone,
                           iconColor: AppColors.info,
-                          title: 'Changer mon numéro de téléphone',
+                          title: s.changerNumeroTitre,
                           subtitle: user?.telephone ?? '',
                           onTap: () => _ouvrirChangementTelephone(user),
                         ),
@@ -229,8 +261,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         SettingsTile(
                           icon: Icons.lock_outline,
                           iconColor: AppColors.warning,
-                          title: 'Changer mon mot de passe',
-                          subtitle: 'Un code de vérification vous sera envoyé',
+                          title: s.changerMotDePasseTitre,
+                          subtitle: s.changerMotDePasseSousTitre,
                           onTap: () => _ouvrirChangementMotDePasse(user),
                         ),
                       ],
@@ -246,7 +278,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const SectionHeader(title: 'Données & confidentialité'),
+                  SectionHeader(title: s.sectionDonnees),
                   const SizedBox(height: 6),
                   AppCard(
                     child: Column(
@@ -254,16 +286,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         SettingsTile(
                           icon: Icons.download_outlined,
                           iconColor: AppColors.success,
-                          title: 'Exporter mes données',
-                          subtitle: 'Recevoir une copie de vos données personnelles',
+                          title: s.exporterDonneesTitre,
+                          subtitle: s.exporterDonneesSousTitre,
                           onTap: _exporterDonnees,
                         ),
                         const Divider(height: 1),
                         SettingsTile(
                           icon: Icons.delete_outline,
                           iconColor: AppColors.danger,
-                          title: 'Supprimer mon compte',
-                          subtitle: 'Conformité ANTIC — profil anonymisé, historique conservé',
+                          title: s.supprimerCompteTitre,
+                          subtitle: s.supprimerCompteSousTitre,
                           onTap: _confirmerSuppression,
                         ),
                       ],
@@ -279,7 +311,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const SectionHeader(title: 'Aide & support'),
+                  SectionHeader(title: s.sectionAideSupport),
                   const SizedBox(height: 6),
                   AppCard(
                     child: Column(
@@ -287,17 +319,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         SettingsTile(
                           icon: Icons.support_agent,
                           iconColor: AppColors.primary,
-                          title: 'Ouvrir un ticket',
-                          subtitle: 'Notre équipe répond sous 24h ouvrées',
-                          onTap: () => _showSnack('Ticket de support ouvert'),
+                          title: s.ouvrirTicketTitre,
+                          subtitle: s.ouvrirTicketSousTitre,
+                          onTap: () => Navigator.of(context).push(
+                            MaterialPageRoute(builder: (_) => const OpenTicketScreen()),
+                          ),
                         ),
                         const Divider(height: 1),
                         SettingsTile(
                           icon: Icons.chat_bubble_outline,
                           iconColor: AppColors.primary,
-                          title: 'Chat en direct',
-                          subtitle: 'Discutez avec un conseiller AxelPay',
-                          onTap: () => _showSnack('Ouverture du chat en direct…'),
+                          title: s.chatDirectTitre,
+                          subtitle: s.chatDirectSousTitre,
+                          // Ouvre le MÊME écran que l'icône assistance de
+                          // l'accueil → "Écrire un message" (SupportScreen
+                          // ouvre SupportChatScreen). On saute directement
+                          // à l'écran de chat plutôt que de repasser par
+                          // le menu Assistance, puisque l'intention de
+                          // l'utilisateur est déjà explicite ici.
+                          onTap: () => Navigator.of(context).push(
+                            MaterialPageRoute(builder: (_) => const SupportChatScreen()),
+                          ),
                         ),
                       ],
                     ),
@@ -312,7 +354,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const SectionHeader(title: 'FAQ'),
+                  SectionHeader(title: s.sectionFaq),
                   const SizedBox(height: 6),
                   AppCard(
               padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 6),
@@ -372,7 +414,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             OutlinedButton.icon(
               onPressed: _seDeconnecter,
               icon: const Icon(Icons.logout, color: AppColors.danger),
-              label: const Text('Se déconnecter', style: TextStyle(color: AppColors.danger)),
+              label: Text(s.seDeconnecter, style: const TextStyle(color: AppColors.danger)),
               style: OutlinedButton.styleFrom(
                 minimumSize: const Size.fromHeight(50),
                 side: const BorderSide(color: AppColors.danger),
@@ -386,19 +428,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   void _choisirLangue() {
+    final s = S.read(context);
+    final controller = context.read<LocaleController>();
     AppBottomSheet.show(
       context: context,
-      title: 'Langue',
+      title: s.langueTitre,
       isScrollControlled: false,
       child: Column(
         mainAxisSize: MainAxisSize.min,
-        children: ['Français', 'English'].map((l) {
+        children: LocaleController.supported.map((l) {
+          final label = l.languageCode == 'en' ? s.langueAnglais : s.langueFrancais;
           return RadioListTile<String>(
-            value: l,
-            groupValue: langue,
-            title: Text(l),
+            value: l.languageCode,
+            groupValue: controller.locale.languageCode,
+            title: Text(label),
             onChanged: (v) {
-              setState(() => langue = v!);
+              controller.definirLangue(Locale(v!));
               Navigator.pop(context);
             },
           );
@@ -416,13 +461,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(AppRadius.sheet)),
       ),
       builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setModalState) => Padding(
+        builder: (ctx, setModalState) {
+          final s = S.of(ctx);
+          return Padding(
           padding: const EdgeInsets.fromLTRB(20, 20, 20, 30),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('Préférences de notification', style: AppTextStyles.h3),
+              Text(s.parametresNotifPrefsTitre, style: AppTextStyles.h3),
               const SizedBox(height: 10),
               Container(
                 padding: const EdgeInsets.all(10),
@@ -440,9 +487,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
               const SizedBox(height: 10),
               ...prefs.map((p) => SwitchListTile(
                     contentPadding: EdgeInsets.zero,
-                    title: Text(p.label),
+                    title: Text(s.notifPrefLabel(p.cle)),
                     subtitle: Text(
-                      p.obligatoire ? '${p.description} · toujours actif' : p.description,
+                      p.obligatoire
+                          ? '${s.notifPrefDescription(p.cle)} · ${s.parametresNotifToujoursActifSuffixe}'
+                          : s.notifPrefDescription(p.cle),
                       style: AppTextStyles.caption,
                     ),
                     value: p.active,
@@ -455,12 +504,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   )),
             ],
           ),
-        ),
+        );
+        },
       ),
     );
   }
 
   Future<void> _exporterDonnees() async {
+    final s = S.read(context);
     // Attente : illustration database.json (au lieu d'un simple SnackBar),
     // dans une boîte de dialogue non-annulable pendant l'appel réseau.
     showDialog(
@@ -468,19 +519,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
       barrierDismissible: false,
       builder: (ctx) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.card)),
-        content: const LottieLoader(size: 90, label: 'Préparation de votre export…'),
+        content: LottieLoader(size: 90, label: s.parametresExportPreparationLabel),
       ),
     );
     try {
       final export = await _repo.exportMyData();
       if (!mounted) return;
       Navigator.pop(context); // ferme la boîte de dialogue d'attente
-      final nbCompteurs = (export['compteurs'] as List?)?.length ?? 0;
+      final emailEnvoye = export['email_envoye'] == true;
+      final message = export['message'] as String? ??
+          (emailEnvoye
+              ? 'Vos données personnelles vous ont été envoyées par e-mail.'
+              : 'Vos données personnelles ont été récupérées.');
       showDialog(
         context: context,
         builder: (ctx) => AlertDialog(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.card)),
-          title: const Text('Export prêt'),
+          title: Text(emailEnvoye ? S.read(context).exportEnvoye : S.read(context).exportPret),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -489,20 +544,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 width: 96,
                 height: 96,
                 repeat: false,
-                errorBuilder: (context, error, stack) =>
-                    const Icon(Icons.inbox_outlined, size: 56, color: AppColors.textMuted),
+                errorBuilder: (context, error, stack) => Icon(
+                  emailEnvoye ? Icons.mark_email_read_outlined : Icons.inbox_outlined,
+                  size: 56,
+                  color: AppColors.textMuted,
+                ),
               ),
               const SizedBox(height: 12),
-              Text(
-                'Vos données personnelles ont été récupérées ($nbCompteurs compteur(s) '
-                'inclus). Cette version ne propose pas encore l’envoi par e-mail — '
-                'contactez le support si vous avez besoin d’un fichier téléchargeable.',
-                textAlign: TextAlign.center,
-              ),
+              Text(message, textAlign: TextAlign.center),
             ],
           ),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Fermer')),
+            TextButton(onPressed: () => Navigator.pop(ctx), child: Text(S.read(context).fermer)),
           ],
         ),
       );
@@ -515,29 +568,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   void _confirmerSuppression() {
     final motDePasseController = TextEditingController();
+    final s = S.read(context);
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.card)),
-        title: const Text('Supprimer mon compte ?'),
+        title: Text(s.parametresSupprimerCompteConfirmTitre),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              'Vos données de profil seront anonymisées. Votre historique financier '
-              'restera archivé pour répondre aux obligations légales comptables.',
-            ),
+            Text(s.parametresSupprimerCompteConfirmMessage),
             const SizedBox(height: 12),
             TextField(
               controller: motDePasseController,
               obscureText: true,
-              decoration: const InputDecoration(hintText: 'Confirmez votre mot de passe'),
+              decoration: InputDecoration(hintText: s.confirmerMotDePasseHint),
             ),
           ],
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Annuler')),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: Text(s.annuler)),
           TextButton(
             onPressed: () async {
               final motDePasse = motDePasseController.text;
@@ -554,7 +605,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 _showSnack(e.message);
               }
             },
-            child: const Text('Confirmer', style: TextStyle(color: AppColors.danger)),
+            child: Text(S.read(context).confirmer, style: const TextStyle(color: AppColors.danger)),
           ),
         ],
       ),
@@ -564,32 +615,33 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void _ouvrirChangementTelephone(UserModel? user) {
     final telephoneController = TextEditingController();
     final motDePasseController = TextEditingController();
+    final s = S.read(context);
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.card)),
-        title: const Text('Changer mon numéro'),
+        title: Text(s.parametresChangerNumeroDialogTitre),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Numéro actuel : ${user?.telephone ?? ''}', style: AppTextStyles.bodyMuted),
+            Text(s.parametresNumeroActuel(user?.telephone ?? ''), style: AppTextStyles.bodyMuted),
             const SizedBox(height: 12),
             TextField(
               controller: telephoneController,
               keyboardType: TextInputType.phone,
-              decoration: const InputDecoration(hintText: 'Nouveau numéro (ex: +237690000000)'),
+              decoration: InputDecoration(hintText: s.parametresNouveauNumeroHint),
             ),
             const SizedBox(height: 10),
             TextField(
               controller: motDePasseController,
               obscureText: true,
-              decoration: const InputDecoration(hintText: 'Confirmez votre mot de passe'),
+              decoration: InputDecoration(hintText: s.confirmerMotDePasseHint),
             ),
           ],
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Annuler')),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: Text(s.annuler)),
           TextButton(
             onPressed: () async {
               final nouveauTelephone = telephoneController.text.trim();
@@ -608,7 +660,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 _showSnack(e.message);
               }
             },
-            child: const Text('Confirmer'),
+            child: Text(S.read(context).confirmer),
           ),
         ],
       ),
@@ -634,13 +686,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(AppRadius.sheet)),
       ),
       builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setModalState) => Padding(
+        builder: (ctx, setModalState) {
+          final s = S.of(ctx);
+          return Padding(
           padding: EdgeInsets.fromLTRB(20, 20, 20, MediaQuery.of(ctx).viewInsets.bottom + 24),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('Changer mon mot de passe', style: AppTextStyles.h3),
+              Text(s.parametresChangerMdpDialogTitre, style: AppTextStyles.h3),
               const SizedBox(height: 10),
               if (!codeEnvoye) ...[
                 Text(
@@ -669,20 +723,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               _showSnack(e.message);
                             }
                           },
-                    child: Text(envoiEnCours ? 'Envoi…' : 'Recevoir le code'),
+                    child: Text(envoiEnCours ? s.envoiEnCours : s.parametresRecevoirLeCodeBouton),
                   ),
                 ),
               ] else ...[
                 TextField(
                   controller: codeController,
                   keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(hintText: 'Code reçu par SMS/e-mail'),
+                  decoration: InputDecoration(hintText: s.parametresCodeRecuHint),
                 ),
                 const SizedBox(height: 10),
                 TextField(
                   controller: nouveauMotDePasseController,
                   obscureText: true,
-                  decoration: const InputDecoration(hintText: 'Nouveau mot de passe'),
+                  decoration: InputDecoration(hintText: s.parametresNouveauMdpHint),
                 ),
                 const SizedBox(height: 16),
                 SizedBox(
@@ -706,13 +760,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               _showSnack(e.message);
                             }
                           },
-                    child: Text(envoiEnCours ? 'Validation…' : 'Valider le nouveau mot de passe'),
+                    child: Text(envoiEnCours ? s.parametresValidationEnCours : s.parametresValiderNouveauMdpBouton),
                   ),
                 ),
               ],
             ],
           ),
-        ),
+        );
+        },
       ),
     );
   }

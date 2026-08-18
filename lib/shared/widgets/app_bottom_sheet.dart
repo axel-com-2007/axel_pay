@@ -7,6 +7,7 @@
 // ============================================================
 
 import 'package:flutter/material.dart';
+import '../../design_system/responsive/responsive_utils.dart';
 import '../../design_system/colors/app_colors.dart';
 import '../../design_system/typography/app_typography.dart';
 import '../../design_system/spacing/app_spacing.dart';

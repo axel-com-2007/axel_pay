@@ -13,7 +13,7 @@ dependencies:
   # Graphique d'évolution de consommation (écran Postpayé)
   fl_chart: ^0.68.0
   # Formatage des montants FCFA et des dates
-  intl: ^0.19.0
+  intl: 0.20.2
   dio: ^5.10.0
   flutter_secure_storage: ^9.0.0 # stockage sécurisé des tokens JWT
   provider: ^6.1.0
@@ -32,6 +32,8 @@ dependencies:
   video_player: ^2.10.0
   pdf: ^3.10.8
   printing: ^5.13.1
+  flutter_localizations:
+    sdk: flutter
   
 
   # Demande des permissions (Android/iOS)

@@ -25,6 +25,7 @@ import '../../design_system/colors/app_colors.dart';
 import '../../design_system/spacing/app_spacing.dart';
 import '../../design_system/typography/app_typography.dart';
 import '../../models/models.dart';
+import '../../l10n/app_strings.dart';
 
 class FactureDetailPage extends StatelessWidget {
   final FactureModel facture;
@@ -74,7 +75,7 @@ class FactureDetailPage extends StatelessWidget {
   // Génération PDF
   // ----------------------------------------------------------------
 
-  Future<Uint8List> _genererPdf() async {
+  Future<Uint8List> _genererPdf(S s) async {
     final doc = pw.Document();
     final blue = PdfColor.fromHex('#0A5FFF');
     final dark = PdfColor.fromHex('#10182B');
@@ -92,11 +93,11 @@ class FactureDetailPage extends StatelessWidget {
             pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [
               pw.Text('AXEL PAY',
                   style: pw.TextStyle(fontSize: 22, fontWeight: pw.FontWeight.bold, color: blue)),
-              pw.Text('Plateforme de gestion électrique',
+              pw.Text(s.platformeGestionElectrique,
                   style: pw.TextStyle(fontSize: 10, color: grey)),
             ]),
             pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.end, children: [
-              pw.Text('FACTURE D\'ÉLECTRICITÉ',
+              pw.Text(s.factureDElectriciteTitre,
                   style: pw.TextStyle(fontSize: 13, fontWeight: pw.FontWeight.bold, color: dark)),
               pw.Text(facture.moisFacturation,
                   style: pw.TextStyle(fontSize: 11, color: grey)),
@@ -127,43 +128,43 @@ class FactureDetailPage extends StatelessWidget {
           pw.Divider(color: border, height: 32),
 
           // Infos client
-          _pdfSection(titre: 'INFORMATIONS CLIENT', border: border, blue: blue, lignes: [
-            _pdfRow('Nom', nomClient, grey, dark),
-            if (compteur.adresse.isNotEmpty) _pdfRow('Adresse', compteur.adresse, grey, dark),
+          _pdfSection(titre: s.informationsClientTitre, border: border, blue: blue, lignes: [
+            _pdfRow(s.nomLabel, nomClient, grey, dark),
+            if (compteur.adresse.isNotEmpty) _pdfRow(s.adresseLabel, compteur.adresse, grey, dark),
             if (compteur.ville != null && compteur.ville!.isNotEmpty)
-              _pdfRow('Ville', compteur.ville!, grey, dark),
+              _pdfRow(s.villeLabel, compteur.ville!, grey, dark),
           ]),
           pw.SizedBox(height: 14),
 
           // Infos compteur
-          _pdfSection(titre: 'INFORMATIONS COMPTEUR', border: border, blue: blue, lignes: [
-            _pdfRow('N° Compteur', compteur.numero, grey, dark),
+          _pdfSection(titre: s.informationsCompteurTitre, border: border, blue: blue, lignes: [
+            _pdfRow(s.numeroCompteurLabel, compteur.numero, grey, dark),
           ]),
           pw.SizedBox(height: 14),
 
           // Relevé
-          _pdfSection(titre: 'RELEVÉ DE CONSOMMATION', border: border, blue: blue, lignes: [
+          _pdfSection(titre: s.releveDeConsommationTitre, border: border, blue: blue, lignes: [
             if (facture.dateReleve != null)
-              _pdfRow('Date de relevé', _fmtDate(facture.dateReleve!), grey, dark),
+              _pdfRow(s.dateDeReleveLabel, _fmtDate(facture.dateReleve!), grey, dark),
             _pdfRow(
-              'Ancien index',
+              s.ancienIndexLabel,
               facture.indexAncien != null
                   ? '${facture.indexAncien!.toStringAsFixed(0)} kWh'
-                  : 'Premier relevé',
+                  : s.premierReleve,
               grey, dark,
             ),
             if (facture.indexNouveau != null)
-              _pdfRow('Nouveau index',
+              _pdfRow(s.nouvelIndexLabel,
                   '${facture.indexNouveau!.toStringAsFixed(0)} kWh', grey, dark),
-            _pdfRowBold('Index à payer',
+            _pdfRowBold(s.indexAPayerLabel,
                 '${_indexAPayer.toStringAsFixed(0)} kWh', blue, dark),
           ]),
           pw.SizedBox(height: 14),
 
           // Facturation
-          _pdfSection(titre: 'FACTURATION', border: border, blue: blue, lignes: [
-            _pdfRow('Période facturée', facture.moisFacturation, grey, dark),
-            _pdfRow('Date limite', _fmtDate(facture.dateLimite), grey, dark),
+          _pdfSection(titre: s.facturationTitre, border: border, blue: blue, lignes: [
+            _pdfRow(s.periodeFactureeLabel, facture.moisFacturation, grey, dark),
+            _pdfRow(s.dateLimiteLabel, _fmtDate(facture.dateLimite), grey, dark),
           ]),
           pw.SizedBox(height: 24),
 
@@ -173,7 +174,7 @@ class FactureDetailPage extends StatelessWidget {
             padding: const pw.EdgeInsets.all(18),
             decoration: pw.BoxDecoration(color: blue, borderRadius: pw.BorderRadius.circular(8)),
             child: pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-              pw.Text('MONTANT À PAYER',
+              pw.Text(s.montantAPayerLabel,
                   style: pw.TextStyle(color: PdfColors.white, fontSize: 13, fontWeight: pw.FontWeight.bold)),
               pw.Text('${formatFcfa(facture.montantFcfa)} FCFA',
                   style: pw.TextStyle(color: PdfColors.white, fontSize: 18, fontWeight: pw.FontWeight.bold)),
@@ -182,7 +183,7 @@ class FactureDetailPage extends StatelessWidget {
 
           pw.Spacer(),
           pw.Divider(color: border, height: 24),
-          pw.Text('Document généré par Axel Pay — ${_fmtDate(DateTime.now())}',
+          pw.Text(s.documentGenereParAxelPayLe(_fmtDate(DateTime.now())),
               style: pw.TextStyle(fontSize: 8, color: grey),
               textAlign: pw.TextAlign.center),
         ],
@@ -248,21 +249,23 @@ class FactureDetailPage extends StatelessWidget {
   // ----------------------------------------------------------------
 
   Future<void> _imprimer(BuildContext context) async {
+    final s = S.read(context);
     try {
       await Printing.layoutPdf(
-        onLayout: (_) => _genererPdf(),
+        onLayout: (_) => _genererPdf(s),
         name: 'Facture_${facture.moisFacturation.replaceAll(' ', '_')}_${compteur.numero}',
       );
     } catch (e) {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Erreur impression : $e')));
+          .showSnackBar(SnackBar(content: Text(s.factureDetailErreurImpression('$e'))));
     }
   }
 
   Future<void> _telecharger(BuildContext context) async {
+    final s = S.read(context);
     try {
-      final bytes = await _genererPdf();
+      final bytes = await _genererPdf(s);
       await Printing.sharePdf(
         bytes: bytes,
         filename:
@@ -271,7 +274,7 @@ class FactureDetailPage extends StatelessWidget {
     } catch (e) {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Erreur téléchargement : $e')));
+          .showSnackBar(SnackBar(content: Text(s.factureDetailErreurTelechargement('$e'))));
     }
   }
 
@@ -281,18 +284,19 @@ class FactureDetailPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final s = S.of(context);
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
-        title: const Text('Détail de la facture'),
+        title: Text(s.factureDetailAppBarTitre),
         actions: [
           IconButton(
-            tooltip: 'Imprimer',
+            tooltip: s.factureDetailImprimer,
             icon: const Icon(Icons.print_outlined),
             onPressed: () => _imprimer(context),
           ),
           IconButton(
-            tooltip: 'Télécharger PDF',
+            tooltip: s.factureDetailTelechargerPdf,
             icon: const Icon(Icons.download_outlined),
             onPressed: () => _telecharger(context),
           ),
@@ -331,11 +335,11 @@ class FactureDetailPage extends StatelessWidget {
                           color: AppColors.primary,
                           letterSpacing: 2)),
                   const SizedBox(height: 2),
-                  Text('Plateforme de gestion électrique',
+                  Text(s.platformeGestionElectrique,
                       style: AppTextStyles.caption),
                   const SizedBox(height: 14),
-                  const Text('FACTURE D\'ÉLECTRICITÉ',
-                      style: TextStyle(
+                  Text(s.factureDElectriciteTitre,
+                      style: const TextStyle(
                           fontSize: 13,
                           fontWeight: FontWeight.bold,
                           letterSpacing: 1.1)),
@@ -367,45 +371,45 @@ class FactureDetailPage extends StatelessWidget {
             _Section(
               titre: 'INFORMATIONS CLIENT',
               lignes: [
-                _Ligne(label: 'Nom', valeur: nomClient),
+                _Ligne(label: s.nomLabel, valeur: nomClient),
                 if (compteur.adresse.isNotEmpty)
-                  _Ligne(label: 'Adresse', valeur: compteur.adresse),
+                  _Ligne(label: s.adresseLabel, valeur: compteur.adresse),
                 if (compteur.ville != null && compteur.ville!.isNotEmpty)
-                  _Ligne(label: 'Ville', valeur: compteur.ville!),
+                  _Ligne(label: s.villeLabel, valeur: compteur.ville!),
               ],
             ),
             const SizedBox(height: AppSpacing.md),
 
             // ── Informations compteur ─────────────────────────────
             _Section(
-              titre: 'INFORMATIONS COMPTEUR',
+              titre: s.informationsCompteurTitre,
               lignes: [
-                _Ligne(label: 'N° Compteur', valeur: compteur.numero),
+                _Ligne(label: s.numeroCompteurLabel, valeur: compteur.numero),
               ],
             ),
             const SizedBox(height: AppSpacing.md),
 
             // ── Relevé de consommation ────────────────────────────
             _Section(
-              titre: 'RELEVÉ DE CONSOMMATION',
+              titre: s.releveDeConsommationTitre,
               lignes: [
                 if (facture.dateReleve != null)
                   _Ligne(
-                      label: 'Date de relevé',
+                      label: s.dateDeReleveLabel,
                       valeur: _fmtDate(facture.dateReleve!)),
                 _Ligne(
-                  label: 'Ancien index',
+                  label: s.ancienIndexLabel,
                   valeur: facture.indexAncien != null
                       ? '${facture.indexAncien!.toStringAsFixed(0)} kWh'
-                      : 'Premier relevé',
+                      : s.premierReleve,
                 ),
                 if (facture.indexNouveau != null)
                   _Ligne(
-                      label: 'Nouveau index',
+                      label: s.nouvelIndexLabel,
                       valeur:
                           '${facture.indexNouveau!.toStringAsFixed(0)} kWh'),
                 _Ligne(
-                  label: 'Index à payer',
+                  label: s.indexAPayerLabel,
                   valeur: '${_indexAPayer.toStringAsFixed(0)} kWh',
                   gras: true,
                   couleurValeur: AppColors.primary,
@@ -416,11 +420,11 @@ class FactureDetailPage extends StatelessWidget {
 
             // ── Facturation ───────────────────────────────────────
             _Section(
-              titre: 'FACTURATION',
+              titre: s.facturationTitre,
               lignes: [
-                _Ligne(label: 'Période facturée', valeur: facture.moisFacturation),
+                _Ligne(label: s.periodeFactureeLabel, valeur: facture.moisFacturation),
                 _Ligne(
-                    label: 'Date limite',
+                    label: s.dateLimiteLabel,
                     valeur: _fmtDate(facture.dateLimite)),
               ],
             ),
@@ -436,8 +440,8 @@ class FactureDetailPage extends StatelessWidget {
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const Text('MONTANT À PAYER',
-                      style: TextStyle(
+                  Text(s.montantAPayerLabel,
+                      style: const TextStyle(
                           color: Colors.white,
                           fontSize: 13,
                           fontWeight: FontWeight.bold)),
@@ -457,7 +461,7 @@ class FactureDetailPage extends StatelessWidget {
                 child: OutlinedButton.icon(
                   onPressed: () => _imprimer(context),
                   icon: const Icon(Icons.print_outlined, size: 18),
-                  label: const Text('Imprimer'),
+                  label: Text(s.factureDetailImprimer),
                   style: OutlinedButton.styleFrom(
                     padding: const EdgeInsets.symmetric(vertical: 14),
                     side: const BorderSide(color: AppColors.primary),
@@ -473,7 +477,7 @@ class FactureDetailPage extends StatelessWidget {
                 child: ElevatedButton.icon(
                   onPressed: () => _telecharger(context),
                   icon: const Icon(Icons.download_outlined, size: 18),
-                  label: const Text('Télécharger PDF'),
+                  label: Text(s.factureDetailTelechargerPdf),
                   style: ElevatedButton.styleFrom(
                     padding: const EdgeInsets.symmetric(vertical: 14),
                     backgroundColor: AppColors.primary,
@@ -487,7 +491,7 @@ class FactureDetailPage extends StatelessWidget {
             ]),
             const SizedBox(height: AppSpacing.md),
 
-            Text('Document généré par Axel Pay',
+            Text(s.documentGenereParAxelPay,
                 style: AppTextStyles.caption,
                 textAlign: TextAlign.center),
           ],
